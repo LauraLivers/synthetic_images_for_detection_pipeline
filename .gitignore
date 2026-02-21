@@ -3,3 +3,6 @@
 **/__pycache__
 myworkspace.code-workspace
 **/.vscode
+**/figs
+**/latex_files
+**/.vscode
