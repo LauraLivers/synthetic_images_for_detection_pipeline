@@ -33,7 +33,7 @@ z_{t-1} = \frac{1}{\sqrt{\alpha_t}}\Bigl(z_t - \frac{\beta_t}{\sqrt{1 - \tilde{\
 $$
 until $t=0$ resulting in synthetic image $z_0$.
 
-$t(\lambda) = \lfloor(1 - \lambda)T\rfloor, \lambda \in \[0, 1\]$
+$t(\lambda) = \lfloor(1 - \lambda)T\rfloor, \lambda \in [0,1]$ 
 larger $\lambda$ leads to higher fidelity between $z_0$ and $z_{real}$
 
 #### 2. Synthetic-to-Real Spectrum of Generated Images
