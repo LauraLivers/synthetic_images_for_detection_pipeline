@@ -3,7 +3,8 @@
     { "path": "DiffCL" },
     { "path": "MobI" },
     { "path": "Laura" },
-    { "path": "Report" }
+    { "path": "Report" },
+    { "path": "Setup"}
   ],
   "settings": {}
 }
