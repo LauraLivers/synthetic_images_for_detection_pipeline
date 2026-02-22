@@ -1,8 +1,5 @@
 .DS_Store
 **/.venv
 **/__pycache__
-myworkspace.code-workspace
-**/.vscode
 **/figs
 **/latex_files
-**/.vscode
