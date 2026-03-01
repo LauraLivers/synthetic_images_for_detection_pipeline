@@ -1,0 +1,49 @@
+# Core ML
+torch
+torchvision
+pytorch-lightning==1.4.5
+# Diffusion / generative
+diffusers
+transformers
+einops
+omegaconf==2.1.1
+# Image processing
+opencv-python
+albumentations==0.4.3
+imgaug==0.2.6
+Pillow
+scikit-image
+imwatermark
+# Scientific
+numpy
+scipy
+pandas
+scikit-learn
+numba
+llvmlite
+# Metrics & eval
+lpips
+torchmetrics==0.6.0
+# Visualization
+matplotlib
+# Data / utils
+h5py
+pyquaternion
+nuscenes-devkit
+pycocotools
+fire
+tqdm
+pyyaml
+tabulate
+loguru
+ftfy
+regex
+point-cloud-utils
+# Taming transformers & CLIP (from README)
+git+https://github.com/openai/CLIP.git
+# Other
+tensorboard
+test-tube
+torchpack
+natsort
+bezier

@@ -1,0 +1,24 @@
+# DiffCL requirements for Linux with CUDA
+# Install with: uv pip install -r requirements-linux-cuda.txt
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+pandas
+numpy
+matplotlib
+Pillow
+tqdm
+diffusers
+transformers
+torch
+torchvision
+accelerate
+pywikibot
+seaborn
+wilds
+git+https://github.com/modestyachts/ImageNetV2_pytorch
+braceexpand
+webdataset
+h5py
+open_clip_torch
+torcheval
+pytorch-fid
