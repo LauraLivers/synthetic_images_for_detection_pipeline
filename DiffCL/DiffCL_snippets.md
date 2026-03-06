@@ -3,12 +3,10 @@
 ```
 DiffCL/
 ├── assets/
-│   ├── ImageNet-LT.jpg        # sample synthetic images figure for ImageNet-LT (used in README)
-│   ├── iWildCam.jpg           # sample synthetic images figure for iWildCam (used in README)
-│   ├── overview.png           # pipeline overview figure (used in README)
+│   ├── *.jpg                       # sample synthetic images figure for ImageNet-LT
 │   └── metadata/
 │       ├── wilds_common_names.pkl   # maps iWildCam species IDs to human-readable names
-│       └── Samples/                 # qualitative result images shown in README
+│       └── Samples/*                # qualitative result images shown in README
 ├── curriculum_training/
 │   ├── __init__.py
 │   ├── ImageNet/                    # Phase 2 training pipeline for ImageNet-LT
@@ -22,13 +20,11 @@ DiffCL/
 │   │   ├── datacreation_scripts/
 │   │   │   └── imagenet_LT.py          # builds the ImageNet-LT dataset split
 │   │   ├── dataloader/
-│   │   │   ├── __init__.py
 │   │   │   ├── Custom_Dataloader.py       # custom dataset class
 │   │   │   ├── data_loader_ImageNet.py    # ImageNet-LT dataloader
 │   │   │   ├── data_loader_wrapper.py     # wraps dataloaders for curriculum stages
 │   │   │   └── sampler.py                 # custom sampler
 │   │   ├── model/
-│   │   │   ├── __init__.py
 │   │   │   ├── NormLayer.py         # normalisation layer
 │   │   │   ├── label_shift_est.py   # label shift estimation
 │   │   │   ├── losses.py            # loss functions
@@ -39,11 +35,9 @@ DiffCL/
 │   │   ├── myshells/
 │   │   │   └── run_training.sh      # shell script to launch training
 │   │   ├── networks/
-│   │   │   ├── __init__.py
 │   │   │   ├── NormLayer.py         # normalisation layer for network
 │   │   │   └── resnet.py            # ResNet backbone definition
 │   │   └── utilis/
-│   │       ├── __init__.py
 │   │       ├── config_parse.py      # parses training config files
 │   │       ├── config_range.txt     # valid config value ranges
 │   │       ├── feature_encode.py    # feature extraction / encoding
@@ -56,7 +50,6 @@ DiffCL/
 │   │       └── visual.py            # visualisation helpers
 │   └── iWildCam/                    # Phase 2 training pipeline for iWildCam (FLYP / Open CLIP)
 │       ├── clip/
-│       │   ├── README.md
 │       │   ├── bpe_simple_vocab_16e6.txt.gz   # BPE vocabulary for tokeniser
 │       │   ├── clip.py                        # CLIP model interface
 │       │   ├── loss.py                        # CLIP training loss
@@ -72,14 +65,12 @@ DiffCL/
 │           ├── logger_utils.py      # logging utilities
 │           ├── main.py              # training entry point
 │           ├── datasets/
-│           │   ├── __init__.py
 │           │   ├── common.py                  # shared dataset utilities
 │           │   ├── iwildcam.py                # iWildCam dataset class
 │           │   ├── laion.py                   # LAION dataset class
 │           │   └── iwildcam_metadata/
 │           │       └── labels.csv             # iWildCam class label mapping
 │           ├── models/
-│           │   ├── __init__.py
 │           │   ├── common.py        # shared model utilities
 │           │   ├── eval.py          # evaluation logic
 │           │   ├── modeling.py      # model construction
@@ -87,7 +78,6 @@ DiffCL/
 │           │   ├── utils.py         # model utilities
 │           │   └── zeroshot.py      # zero-shot evaluation
 │           └── templates/
-│               ├── __init__.py
 │               ├── iwildcam_template.py   # zero-shot prompt templates for iWildCam
 │               └── utils.py               # template utilities
 ├── data_generation/
@@ -99,26 +89,20 @@ DiffCL/
 │   │   ├── imagenetlt_classes.py    # ImageNet-LT class list
 │   │   ├── sample.csv               # template input CSV (hard sample list)
 │   │   └── sample_imgs/
-│   │       ├── generated.jpg        # example generated image
-│   │       └── n02093428_672.JPEG   # example real input image
 │   ├── iWildCam/                    # Phase 1 generation for iWildCam
 │   │   ├── comp_clip_scores.py      # computes image–image and image–text CLIP scores; filters results
 │   │   ├── gene_img.py              # generates synthetic images via SDXL img2img
 │   │   ├── sample.csv               # template input CSV (hard sample list)
-│   │   └── sample_imgs/
-│   │       ├── 8b5d271c-21bc-11ea-a13a-137349068a90.jpg   # example real input image
-│   │       └── generated.jpg                               # example generated image
+│   │   └── sample_imgs/                              # example generated image
 │   └── model/
-│       ├── __init__.py
 │       └── pipeline_stable_diffusion_xl_img2img.py   # custom SDXL img2img pipeline
 ├── scripts/
 │   ├── data_generation_inlt.sh      # runs full data generation pipeline for ImageNet-LT
 │   └── data_generation_wilds.sh     # runs full data generation pipeline for iWildCam
 ├── README.md                        # project description, results tables, usage instructions
 ├── requirements.txt                 # Python dependencies
-├── requirements-linux-cuda.txt      # Python dependencies for Linux + CUDA
-├── setup_env.sh                     # sets up the conda environment
-└── video2image.sh                   # extracts frames from a video
+├── setup_env.sh                     # sets up the conda environment $/rightarrow$ LAURA
+└── video2image.sh                   # extracts frames from a video $/rightarrow$ LAURA
 ```
 ---
 
