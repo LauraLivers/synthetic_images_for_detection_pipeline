@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
+Assumption:
+.env file with username and password for API
+.csv file with list of observations(images) to retrieve
 Usage:
     python patrol_images.py --csv observations.csv
     python patrol_images.py --csv observations.csv --output ./my_images
-    python patrol_images.py --csv observations.csv --dry-run -> useless!
 
 Output filenames:
     {output}/{obs_id}_{camera}_{timestamp}.jpg
