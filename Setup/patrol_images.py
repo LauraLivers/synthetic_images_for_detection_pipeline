@@ -3,7 +3,7 @@
 Usage:
     python patrol_images.py --csv observations.csv
     python patrol_images.py --csv observations.csv --output ./my_images
-    python patrol_images.py --csv observations.csv --dry-run
+    python patrol_images.py --csv observations.csv --dry-run -> useless!
 
 Output filenames:
     {output}/{obs_id}_{camera}_{timestamp}.jpg
@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+import json
 
 import requests
 from dotenv import load_dotenv
@@ -42,8 +43,6 @@ def parse_args():
                         help="Skip images that already exist on disk (default: true)")
     parser.add_argument("--no-skip-existing", action="store_false", dest="skip_existing",
                         help="Re-download even if files already exist")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print what would be downloaded without actually downloading")
     return parser.parse_args()
 
 
@@ -71,7 +70,12 @@ def load_csv(csv_path: str) -> list[dict]:
 
 
 def parse_cameras(raw: str) -> list[str]:
-    """Parse ExpectedImages: 'front,back,front thermal' -> ['front', 'back', 'front thermal']"""
+    """Parse ExpectedImages: handles ["front" "thermal"] and ["right"] formats."""
+    import re
+    raw = raw.strip()
+    matches = re.findall(r'"([^"]+)"', raw)
+    if matches:
+        return matches
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
@@ -115,7 +119,7 @@ def download_image(session: requests.Session, url: str, dest: Path) -> None:
     """Download one image to disk. Exits on failure."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            resp = session.get(url, timeout=60, stream=True)
+            resp = requests.get(url, timeout=60, stream=True)
             if resp.status_code == 200:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with open(dest, "wb") as f:
@@ -150,8 +154,6 @@ def main():
         sys.exit(1)
     print(f"  CSV file   : {args.csv}")
     print(f"  Output dir : {args.output}")
-    if args.dry_run:
-        print(f"  Mode       : DRY RUN")
 
     print("[1/3] Loading observations from CSV...")
     rows = load_csv(args.csv)
@@ -189,11 +191,6 @@ def main():
                 skipped_obs += 1
                 continue
 
-        if args.dry_run:
-            for cam in cameras:
-                print(f"    [DRY RUN] {obs_id}_{camera_slug(cam)}_{timestamp}.jpg")
-            print()
-            continue
 
         # Fetch observation from API to get signed image URLs
         obs = fetch_observation(session, org, obs_id)
@@ -228,7 +225,8 @@ def main():
                 sys.exit(1)
 
             ext = image_ext(url)
-            dest = output_dir / f"{obs_id}_{slug}_{timestamp}{ext}"
+            safe_ts = timestamp.replace(" ", "_").replace(",", "").replace(":", "-")
+            dest = output_dir / f"{obs_id}_{slug}_{safe_ts}{ext}"
 
             download_image(session, url, dest)
             size_kb = dest.stat().st_size // 1024
@@ -238,13 +236,10 @@ def main():
         print()
 
     print(f"[3/3] Summary")
-    if args.dry_run:
-        print(f"  Dry run complete. No files were written.")
-    else:
-        print(f"  Observations processed : {len(rows) - skipped_obs}")
-        print(f"  Observations skipped   : {skipped_obs} (already downloaded)")
-        print(f"  Images downloaded      : {total_images}")
-        print(f"  Output directory       : {output_dir.resolve()}")
+    print(f"  Observations processed : {len(rows) - skipped_obs}")
+    print(f"  Observations skipped   : {skipped_obs} (already downloaded)")
+    print(f"  Images downloaded      : {total_images}")
+    print(f"  Output directory       : {output_dir.resolve()}")
 
 
 if __name__ == "__main__":
