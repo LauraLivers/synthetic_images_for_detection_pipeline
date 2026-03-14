@@ -1,1 +1,4 @@
 /robo_images
+best_model.pth
+hard_samples.csv
+wandb/
