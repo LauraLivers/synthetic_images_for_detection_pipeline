@@ -1,3 +1,5 @@
+""" run with input path in termial. """
+
 import os
 from PIL import Image
 
