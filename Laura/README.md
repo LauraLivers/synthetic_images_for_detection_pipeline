@@ -10,7 +10,7 @@ dvc remote add -d [path/to/remote]
 dvc add [path/to/data]
 ```
 this automatically creates a `.gitignore` and `[dataset.dvc]` file. This excludes the data itself from being added to git, while ensuring the hash for each version is commited to git for tracking
-
+---
 ## Step 1: Data Extraction & Preprocessing
 ### Dataset creation
 0. download all images with `patrol_images.py`
@@ -19,7 +19,7 @@ this automatically creates a `.gitignore` and `[dataset.dvc]` file. This exclude
 
 ### Label creation for training
 4. annotate all `ladder` images using `label-studio start` and navigate to `http://localhost:8080`
-
+---
 ## Step 2: Easy vs. Hard Samples
 ### Pretrained Model with class Ladder
 [Open Image Database](https://github.com/widemeadows/openimages-dataset?tab=readme-ov-file) contains label [ladder](https://storage.googleapis.com/openimages/web/visualizer/index.html?type=detection&set=train&c=%2Fm%2F012w5l)  
@@ -32,14 +32,30 @@ to  make sure the model contains the label `ladder` and can detect ladders $\rig
 ```
 python -c "from ultralytics import YOLO; model = YOLO('yolov8m-oiv7.pt'); print({v: k for k, v in model.names.items() if '[label]' in v})"
 ```
-7. create .csv file containing all filenames mapped to the label index
-```
-uv run label_csv.py --input_path [input] --class_index [index]
-```
-This creates `image_mapped_labels_[class_index].csv` which will be used for the split logic later on.  
+and add to `yolo_training.py` as CONFIG_VARIABLE
+### Inference only
+7. run `uv run yolo_training.py --inference_only --source [path/to/dataset]` 
+![yolo no training](/bounding_boxes_inference_only/1_x_d86efae0818b44668eef0cb38f465ad4_front_5_March_2026_12-56.jpg_bb.png)
+#### Results
+- **total images**: 376
+- **ladder**: 160 | 42.5%
+- **no ladder**: 216 | 57.5%  
 
-6. run `uv run yolo_training.py` to separate the ladder-images into **easy** and **hard** samples. The hard samples will be used for *diffusion curriculum* to make the model more robust for detection.
-Verify the results by looking at the heatmap images generated in folder `EigenCAM_heatmaps` and compare to the results.
+| result | number | 
+| --- | --- |
+|positive| 37 |
+|false positive | 0 |
+| negative | 216 |
+| false negative | 123 |
 
+### with training
+- **test set**: 57
+- **ladder**: 24 | 42.1%
+- **no ladder**: 34 | 57.9%
 
-
+| result | number | 
+|---|---|
+|positive| 24 |
+|false positive | 4 |
+| negative | 29 |
+| false negative | 0 |

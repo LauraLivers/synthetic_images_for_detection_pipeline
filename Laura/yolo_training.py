@@ -51,7 +51,6 @@ wandb.init(project='ladder-detection-yolo', config={
 def inference(model, source_dir, active_class_label, output_dir='bounding_boxes'):
     os.makedirs(output_dir, exist_ok=True)
     results = []
-    print(os.listdir(source_dir))
 
     for filename in os.listdir(source_dir):
         if not filename.endswith(('.jpg', '.png', '.jpeg')):
@@ -85,17 +84,14 @@ def inference(model, source_dir, active_class_label, output_dir='bounding_boxes'
             predicted_label = 'x'
 
         cv2.imwrite(os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png'), original_image)
-        try:
-            results.append({
-                'filename': filename,
-                'true_label': true_label,
-                'confidence_ladder': max_conf,
-                'predicted_label': predicted_label,
-                'correct': true_label == (1 if predicted_label in ['1', '1_x'] else 0),
-                'detection_path': os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png')
-            })
-        except Exception as e:
-            print(e)
+        results.append({
+            'filename': filename,
+            'true_label': true_label,
+            'confidence_ladder': max_conf,
+            'predicted_label': predicted_label,
+            'correct': true_label == (1 if predicted_label in ['1', '1_x'] else 0),
+            'detection_path': os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png')
+        })
     return pd.DataFrame(results)
 
 if not args.inference_only:
@@ -130,10 +126,7 @@ if not args.inference_only:
                     lines = f.readlines()
                 with open(dst_label, 'w') as f:
                     for line in lines:
-                        parts = line.strip().split()
-                        if parts:
-                            parts[0] = '0'
-                            f.write(' '.join(parts) + '\n')
+                        f.write(line)
 
     with open(DATASET_YAML, 'w') as f:
         f.write(f'path: {os.path.abspath(ANNOTATIONS_DIR)}\n')
@@ -168,7 +161,8 @@ if not args.inference_only:
         name='train',
         device=device,
         close_mosaic=0,
-        warmup_epochs=1
+        warmup_epochs=1,
+        freeze=22
     )
 
     model = YOLO(train_results.save_dir / 'weights/best.pt')
