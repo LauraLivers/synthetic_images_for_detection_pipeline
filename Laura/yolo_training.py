@@ -1,6 +1,5 @@
 import os
 import cv2
-import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 import wandb
@@ -12,84 +11,96 @@ import argparse
 ### Parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--inference_only', action='store_true')
+parser.add_argument('--source', type=str, default=None)
 args = parser.parse_args()
 
+if args.inference_only and args.source is None:
+    parser.error('--source is required with --inference_only')
 
 ### Config Variables
-MODEL_PATH = 'yolov8m-oiv7.pt' 
+MODEL_PATH = 'yolov8m-oiv7.pt'
 IMAGE_DIR = 'robo_images'
-CLASS_LABEL = 298 # HARDCODED LADDER
-LABELS = f'image_mapped_labels_{CLASS_LABEL}' # change if file changes
+CLASS_LABEL = 298
+ANNOTATIONS_DIR = 'robo_images/yolo_annotations'
 MODEL_SAVE_PATH = 'best_model.pt'
 DATASET_YAML = 'dataset.yaml'
 TRAIN_SIZE = 0.7
 VAL_SIZE = 0.15
 TEST_SIZE = 0.15
-# fine tune if needed
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 LEARNING_RATE = 1e-4
-EPOCHS = 20
+EPOCHS = 10
 RANDOM_SEED = 42
 CONFIDENCE_THRESHOLD = 0.5
 
 ### Acceleration
 device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 
-# load .env file for wandb API key
 load_dotenv()
 wandb.init(project='ladder-detection-yolo', config={
-    'batch_size' : BATCH_SIZE,
-    'learning_rate' :  LEARNING_RATE,
-    'epochs' : EPOCHS,
-    'random_seed' : RANDOM_SEED,
-    'train_size' : TRAIN_SIZE,
-    'val_size' : VAL_SIZE,
-    'test_size' : TEST_SIZE,
-    'mode' : 'inference_only' if args.inference_only else 'train+inference'
+    'batch_size': BATCH_SIZE,
+    'learning_rate': LEARNING_RATE,
+    'epochs': EPOCHS,
+    'random_seed': RANDOM_SEED,
+    'train_size': TRAIN_SIZE,
+    'val_size': VAL_SIZE,
+    'test_size': TEST_SIZE,
+    'mode': 'inference_only' if args.inference_only else 'train+inference'
 })
 
-def inference(model, output_dir='bounding_boxes'):
-    """ inference run on pretrained or trained model """
+def inference(model, source_dir, active_class_label, output_dir='bounding_boxes'):
     os.makedirs(output_dir, exist_ok=True)
     results = []
+    print(os.listdir(source_dir))
 
-    for folder in ['ladder', 'no_ladder']: # HARDCODED for now, change later for better encapsulation
-        true_label = 1 if folder == 'ladder' else 0
-        for filename in os.listdir(os.path.join(IMAGE_DIR, folder)):
-            if not filename.endswith(('.jpg', '.png', '.jpeg')): # ignore .DS_Store files
-                continue
-            img_path = os.path.join(IMAGE_DIR, folder, filename)
+    for filename in os.listdir(source_dir):
+        if not filename.endswith(('.jpg', '.png', '.jpeg')):
+            continue
+        img_path = os.path.realpath(os.path.join(source_dir, filename))
+        annotation = os.path.join(ANNOTATIONS_DIR, 'labels', os.path.splitext(filename)[0] + '.txt')
+        true_label = 1 if os.path.exists(annotation) and os.path.getsize(annotation) > 0 else 0
 
-            yolo_result = model.predict(img_path, conf=0.05, verbose=False)[0] # to get bounding boxes no matter what
-            ladder_boxes = [box for box in yolo_result.boxes if int(box.cls.item()) == CLASS_LABEL]
-            max_conf = max([box.conf.item() for box in ladder_boxes]) if ladder_boxes else None
-            predicted_label = 1 if max_conf is not None and max_conf >= CONFIDENCE_THRESHOLD else 0
+        yolo_result = model.predict(img_path, conf=0.1, verbose=False)[0]
+        ladder_boxes = [box for box in yolo_result.boxes if int(box.cls.item()) == active_class_label]
+        max_conf = max([box.conf.item() for box in ladder_boxes]) if ladder_boxes else None
 
-            # Bounding Boxes
-            original_image = cv2.imread(img_path)
-            for box in ladder_boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                color = (0, 255, 0) if box.conf.item() >= CONFIDENCE_THRESHOLD else (0, 0, 255) # color code bounding boxes
-                cv2.rectangle(original_image, (x1,y1), (x2,y2), color, 2)
-                cv2.putText(original_image, f'ladder {box.conf.item():.4f}', (x1,y1 - 10),
-                            cv2.FONT_HERSHEY_COMPLEX, 0.9, (0, 255, 0), 2)
-            cv2.imwrite(os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png'), original_image)
+        original_image = cv2.imread(img_path)
+        for box in ladder_boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            color = (0, 255, 0) if box.conf.item() >= CONFIDENCE_THRESHOLD else (0, 0, 255)
+            cv2.rectangle(original_image, (x1,y1), (x2,y2), color, 2)
+            cv2.putText(original_image, f'ladder {box.conf.item():.4f}', (x1,y1-10),
+                        cv2.FONT_HERSHEY_COMPLEX, 0.9, (0, 255, 0), 2)
 
+        has_confident = any(box.conf.item() >= CONFIDENCE_THRESHOLD for box in ladder_boxes)
+        has_low_conf = any(box.conf.item() < CONFIDENCE_THRESHOLD for box in ladder_boxes)
+
+        if not ladder_boxes:
+            predicted_label = '0'
+        elif has_confident and has_low_conf:
+            predicted_label = '1_x'
+        elif has_confident:
+            predicted_label = '1'
+        else:
+            predicted_label = 'x'
+
+        cv2.imwrite(os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png'), original_image)
+        try:
             results.append({
-                'filename' : filename,
-                'true_label' : true_label,
-                'confidence_ladder' : max_conf,
-                'predicted_label' : predicted_label,
-                'correct' : true_label == predicted_label,
-                'gradcam_path' : os.path.join(output_dir, f'{filename}_bb_{predicted_label}.png')
+                'filename': filename,
+                'true_label': true_label,
+                'confidence_ladder': max_conf,
+                'predicted_label': predicted_label,
+                'correct': true_label == (1 if predicted_label in ['1', '1_x'] else 0),
+                'detection_path': os.path.join(output_dir, f'{predicted_label}_{filename}_bb.png')
             })
-    return pd.DataFrame(results) 
+        except Exception as e:
+            print(e)
+    return pd.DataFrame(results)
 
 if not args.inference_only:
-        
-    # dataset split
     all_images = []
-    for folder in ['ladder', 'no_ladder']: # HARDCODED for now, change later for better encapsulation
+    for folder in ['ladder', 'no_ladder']:
         for filename in os.listdir(os.path.join(IMAGE_DIR, folder)):
             if filename.endswith(('.jpg', '.jpeg', '.png')):
                 all_images.append({
@@ -103,8 +114,8 @@ if not args.inference_only:
     val_df, test_df = train_test_split(temp_df, test_size=TEST_SIZE / (VAL_SIZE + TEST_SIZE), stratify=temp_df['ladder'], random_state=RANDOM_SEED)
 
     for split, split_df in [('train', train_df), ('val', val_df), ('test', test_df)]:
-        images_out = os.path.join(LABELS, split, 'images')
-        labels_out = os.path.join(LABELS, split, 'labels')
+        images_out = os.path.join(ANNOTATIONS_DIR, split, 'images')
+        labels_out = os.path.join(ANNOTATIONS_DIR, split, 'labels')
         os.makedirs(images_out, exist_ok=True)
         os.makedirs(labels_out, exist_ok=True)
         for _, row in split_df.iterrows():
@@ -112,19 +123,25 @@ if not args.inference_only:
             if not os.path.exists(dst_img):
                 os.symlink(os.path.abspath(os.path.join(IMAGE_DIR, row['folder'], row['filename'])), dst_img)
             label_file = os.path.splitext(row['filename'])[0] + '.txt'
-            label_src = os.path.abspath(os.path.join(LABELS, 'labels', label_file))
+            label_src = os.path.abspath(os.path.join(ANNOTATIONS_DIR, 'labels', label_file))
             dst_label = os.path.join(labels_out, label_file)
             if os.path.exists(label_src) and not os.path.exists(dst_label):
-                os.symlink(label_src, dst_label)
+                with open(label_src, 'r') as f:
+                    lines = f.readlines()
+                with open(dst_label, 'w') as f:
+                    for line in lines:
+                        parts = line.strip().split()
+                        if parts:
+                            parts[0] = '0'
+                            f.write(' '.join(parts) + '\n')
 
     with open(DATASET_YAML, 'w') as f:
-        f.write(f'path: {os.path.abspath(LABELS)}\n')
+        f.write(f'path: {os.path.abspath(ANNOTATIONS_DIR)}\n')
         f.write('train: train/images\n')
         f.write('val: val/images\n')
         f.write('test: test/images\n')
         f.write('nc: 1\n')
         f.write('names:\n  0: ladder\n')
-
 
     def on_fit_epoch_end(trainer):
         wandb.log({
@@ -138,11 +155,10 @@ if not args.inference_only:
             'val_recall': trainer.metrics.get('metrics/recall(B)', 0),
         })
 
-
-    model = MODEL_PATH
+    model = YOLO(MODEL_PATH)
     model.add_callback('on_fit_epoch_end', on_fit_epoch_end)
     train_results = model.train(
-        data='dataset.yaml',
+        data=DATASET_YAML,
         epochs=EPOCHS,
         batch=BATCH_SIZE,
         lr0=LEARNING_RATE,
@@ -155,21 +171,32 @@ if not args.inference_only:
         warmup_epochs=1
     )
 
-
     model = YOLO(train_results.save_dir / 'weights/best.pt')
+    model.save(MODEL_SAVE_PATH)
+    model = YOLO(MODEL_SAVE_PATH)
 
-    metrics = model.val()
+    val_metrics = model.val(data=DATASET_YAML, split='val')
     wandb.log({
-        'mAP50' : metrics.box.map50,
-        'mAP50-95' : metrics.box.map,
-        'precision' : metrics.box.mp,
-        'recall' : metrics.box.mr
+        'val_mAP50': val_metrics.box.map50,
+        'val_mAP50-95': val_metrics.box.map,
+        'val_precision': val_metrics.box.mp,
+        'val_recall': val_metrics.box.mr
     })
+
+    test_metrics = model.val(data=DATASET_YAML, split='test')
+    wandb.log({
+        'test_mAP50': test_metrics.box.map50,
+        'test_mAP50-95': test_metrics.box.map,
+        'test_precision': test_metrics.box.mp,
+        'test_recall': test_metrics.box.mr
+    })
+
+    inference_df = inference(model, os.path.join(ANNOTATIONS_DIR, 'test', 'images'), active_class_label=0)
+
 else:
     model = YOLO(MODEL_PATH)
+    inference_df = inference(model, args.source, active_class_label=CLASS_LABEL)
 
-  
-inference_df = inference(model)
 detected = inference_df[inference_df['confidence_ladder'] >= CONFIDENCE_THRESHOLD]
 hard_samples = inference_df[inference_df['confidence_ladder'].notna() & (inference_df['confidence_ladder'] < CONFIDENCE_THRESHOLD)]
 no_detection = inference_df[inference_df['confidence_ladder'].isna()]
