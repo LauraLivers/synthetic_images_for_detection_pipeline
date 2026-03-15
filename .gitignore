@@ -8,3 +8,5 @@ hslu_thesis.pdf
 **/.env
 unused_images/
 runs
+yolov8m-oiv7.pt
+yolov8n-oiv7.pt
