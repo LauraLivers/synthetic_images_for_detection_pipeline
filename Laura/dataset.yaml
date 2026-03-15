@@ -1,0 +1,7 @@
+path: /Users/laura/Desktop/ba_thesis/Laura/robo_images/yolo_annotations
+train: train/images
+val: val/images
+test: test/images
+nc: 1
+names:
+  0: ladder

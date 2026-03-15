@@ -1,37 +1,34 @@
-import torch
-import torch.nn as nn
-from  torch.utils.data import Dataset, DataLoader
-from torchvision import models, transforms
-from PIL import Image
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.image import show_cam_on_image
-from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-import numpy as np
-import cv2
-
-from dotenv import load_dotenv
 import os
+import cv2
+import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
 import wandb
+import shutil
+from ultralytics import YOLO
+from pytorch_grad_cam import EigenCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from sklearn.model_selection import train_test_split
+import torch
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 
 IMAGE_DIR = 'robo_images'
-LABELS = 'resnet50_labels.csv' # change if file changes
-MODEL_SAVE_PATH = 'best_model.pth'
+LABELS = 'robo_images/yolo_annotations' # change if file changes
+MODEL_SAVE_PATH = 'best_model.pt'
+DATASET_YAML = 'dataset.yaml'
 TRAIN_SIZE = 0.7
 VAL_SIZE = 0.15
 TEST_SIZE = 0.15
 # tune
 BATCH_SIZE = 8
 LEARNING_RATE = 1e-4
-EPOCHS = 10
+EPOCHS = 20
 RANDOM_SEED = 42
 CONFIDENCE_THRESHOLD = 0.5
 
+device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 load_dotenv()
-wandb.init(project='ladder-detection-resnet', config={
+wandb.init(project='ladder-detection-yolo', config={
     'batch_size' : BATCH_SIZE,
     'learning_rate' :  LEARNING_RATE,
     'epochs' : EPOCHS,
@@ -41,152 +38,139 @@ wandb.init(project='ladder-detection-resnet', config={
     'test_size' : TEST_SIZE
 })
 
+# dataset split
+all_images = []
+for folder in ['ladder', 'no_ladder']:
+    for filename in os.listdir(os.path.join(IMAGE_DIR, folder)):
+        if filename.endswith(('.jpg', '.jpeg', '.png')):
+            all_images.append({
+                'filename': filename,
+                'folder': folder,
+                'ladder': 1 if folder == 'ladder' else 0
+            })
 
-class LadderDataset(Dataset):
-    def __init__(self, df, transform=None):
-        self.df = df
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.df)
-    
-    def __getitem__(self, idx):
-        folder = 'ladder' if self.df.iloc[idx]['ladder'] == 1 else 'no_ladder'
-        image = Image.open(os.path.join(IMAGE_DIR, folder, self.df.iloc[idx]['image_name']))
-        label = self.df.iloc[idx]['ladder']
-        if self.transform:
-            image = self.transform(image)
-        return image, label, self.df.iloc[idx]['image_name']
-    
-transform = transforms.Compose(
-    [transforms.Resize((224,224)), # RestNet specific
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])] # ResNet specific
-) 
-df = pd.read_csv(LABELS)
-df = df[df['image_name'].str.endswith(('.jpg', '.jpeg', '.png'))]
-
+df = pd.DataFrame(all_images)
 train_df, temp_df = train_test_split(df, test_size=(VAL_SIZE + TEST_SIZE), stratify=df['ladder'], random_state=RANDOM_SEED)
-val_df, test_df = train_test_split(temp_df, test_size=TEST_SIZE/(VAL_SIZE+TEST_SIZE), stratify=temp_df['ladder'], random_state=RANDOM_SEED)
+val_df, test_df = train_test_split(temp_df, test_size=TEST_SIZE / (VAL_SIZE + TEST_SIZE), stratify=temp_df['ladder'], random_state=RANDOM_SEED)
 
-train_dataset = LadderDataset(train_df.reset_index(drop=True), transform=transform)
-val_dataset = LadderDataset(val_df.reset_index(drop=True), transform=transform)
-test_dataset = LadderDataset(train_df.reset_index(drop=True), transform=transform)
+for split, split_df in [('train', train_df), ('val', val_df), ('test', test_df)]:
+    images_out = os.path.join(LABELS, split, 'images')
+    labels_out = os.path.join(LABELS, split, 'labels')
+    os.makedirs(images_out, exist_ok=True)
+    os.makedirs(labels_out, exist_ok=True)
+    for _, row in split_df.iterrows():
+        dst_img = os.path.join(images_out, row['filename'])
+        if not os.path.exists(dst_img):
+            os.symlink(os.path.abspath(os.path.join(IMAGE_DIR, row['folder'], row['filename'])), dst_img)
+        label_file = os.path.splitext(row['filename'])[0] + '.txt'
+        label_src = os.path.abspath(os.path.join(LABELS, 'labels', label_file))
+        dst_label = os.path.join(labels_out, label_file)
+        if os.path.exists(label_src) and not os.path.exists(dst_label):
+            os.symlink(label_src, dst_label)
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-model.fc = nn.Linear(model.fc.in_features, 2)
-model = model.to(device)
-
-class_weights = torch.tensor([1.0, len(train_df[train_df['ladder']==0]) / len(train_df[train_df['ladder']==1])]).to(device)
-criterion = nn.CrossEntropyLoss(weight=class_weights)
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+with open(DATASET_YAML, 'w') as f:
+    f.write(f'path: {os.path.abspath(LABELS)}\n')
+    f.write('train: train/images\n')
+    f.write('val: val/images\n')
+    f.write('test: test/images\n')
+    f.write('nc: 1\n')
+    f.write('names:\n  0: ladder\n')
 
 
-def train_epoch(model, loader, optimizer, criterion):
-    model.train()
-    total_loss, correct = 0, 0
+def on_fit_epoch_end(trainer):
+    wandb.log({
+        'epoch': trainer.epoch,
+        'train_box_loss': trainer.loss_items[0].item(),
+        'train_cls_loss': trainer.loss_items[1].item(),
+        'train_dfl_loss': trainer.loss_items[2].item(),
+        'val_mAP50': trainer.metrics.get('metrics/mAP50(B)', 0),
+        'val_mAP50-95': trainer.metrics.get('metrics/mAP50-95(B)', 0),
+        'val_precision': trainer.metrics.get('metrics/precision(B)', 0),
+        'val_recall': trainer.metrics.get('metrics/recall(B)', 0),
+    })
 
-    for images, labels, _ in loader:
-        images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-        correct += (outputs.argmax(1) == labels).sum().item()
-        
-    return total_loss / len(loader), correct / len(loader.dataset)
 
-def validation_epoch(model, loader, criterion):
-    model.eval()
-    total_loss, correct = 0, 0
-    with torch.no_grad():
-        for images, labels, _ in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            total_loss += loss.item()
-            correct += (outputs.argmax(1) == labels).sum().item()
-    return total_loss / len(loader), correct / len(loader.dataset)
+model = YOLO('yolov8n.pt')
+model.add_callback('on_fit_epoch_end', on_fit_epoch_end)
+train_results = model.train(
+    data='dataset.yaml',
+    epochs=EPOCHS,
+    batch=BATCH_SIZE,
+    lr0=LEARNING_RATE,
+    seed=RANDOM_SEED,
+    save=True,
+    project='ladder-detection-yolo',
+    name='train',
+    device='mps' if torch.backends.mps.is_available() else '0' if torch.cuda.is_available() else 'cpu',
+    close_mosaic=0,
+    warmup_epochs=1
+)
 
-def inference(model, loader, output_dir='grad_cam'):
+
+model = YOLO(train_results.save_dir / 'weights/best.pt')
+
+metrics = model.val()
+wandb.log({
+    'mAP50' : metrics.box.map50,
+    'mAP50-95' : metrics.box.map,
+    'precision' : metrics.box.mp,
+    'recall' : metrics.box.mr
+})
+
+class YOLOWrapper(torch.nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+    def forward(self, x):
+        outputs = self.model(x)
+        while isinstance(outputs, tuple):
+            outputs = outputs[0]
+        return outputs
+    
+
+
+def inference(model, output_dir='grad_cam'):
     os.makedirs(output_dir, exist_ok=True)
-    model.eval()
     results = []
+    wrapped_model = YOLOWrapper(model.model)
+    target_layer = model.model.model[-2]
+    cam = EigenCAM(wrapped_model, target_layers=[target_layer])
 
-    target_layer = model.layer4[-1]
-    cam = GradCAM(model=model, target_layers=[target_layer])
-    # gradCAM needs gradients, so no torch.no_grad()
-    for images, labels, filenames in loader:
-        images = images.to(device)
-        outputs = torch.softmax(model(images), dim=1) # why softmax?
-        for i, (filename, label, confidence )in enumerate(zip(filenames, labels, outputs)):
-            confidence_ladder = confidence[1].item()
-            predicted_label = confidence.argmax().item()
-            correct = label.item() == predicted_label
+    for folder in ['ladder', 'no_ladder']:
+        true_label = 1 if folder == 'ladder' else 0
+        for filename in os.listdir(os.path.join(IMAGE_DIR, folder)):
+            if not filename.endswith(('.jpg', '.png', '.jpeg')):
+                continue
+            img_path = os.path.join(IMAGE_DIR, folder, filename)
+            yolo_result = model.predict(img_path, conf=CONFIDENCE_THRESHOLD)[0]
+            max_conf = yolo_result.boxes.conf.max().item() if len(yolo_result.boxes) > 0 else 0.0
+            predicted_label = 1 if max_conf >= CONFIDENCE_THRESHOLD else 0
 
-            
-            input_tensor = images[i].unsqueeze(0)
-            targets = [ClassifierOutputTarget(1)]
-            grayscale_cam = cam(input_tensor=input_tensor, targets=targets)
-
-            # create and save heatmap
-            original_image = cv2.imread(os.path.join(IMAGE_DIR, 'ladder' if label.item() == 1 else 'no_ladder', filename))
-            original_image = cv2.resize(original_image, (224,224))
+            original_image = cv2.imread(img_path)
+            original_image = cv2.resize(original_image, (640,640)) # fixed size for YOLO
             original_image = original_image / 255.0
-            visualization = show_cam_on_image(original_image.astype(np.float32), grayscale_cam[0], use_rgb=True)
+
+            input_tensor = torch.from_numpy(original_image.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
+            grayscale_cam = cam(input_tensor=input_tensor)[0]
+
+            visualization = show_cam_on_image(original_image.astype(np.float32), grayscale_cam, use_rgb=True)
             cv2.imwrite(os.path.join(output_dir, f'{filename}_grad_cam.png'), cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR))
 
             results.append({
                 'filename' : filename,
-                'true_label' : label.item(),
-                'confidence_ladder' : confidence[1].item(),
-                'confidence_no_ladder' : confidence[0].item(),
-                'predicted_label' : confidence.argmax().item(),
-                'correct' : label.item() == confidence.argmax().item(),
-                'gradcam_path' : os.path.join(output_dir, f'{filename}_gradcam.png')
+                'true_label' : true_label,
+                'confidence_ladder' : max_conf,
+                'predicted_label' : predicted_label,
+                'correct' : true_label == predicted_label,
+                'gradcam_path' : os.path.join(output_dir, f'{filename}_grad_cam.png')
             })
     return pd.DataFrame(results)
-
-best_val_loss = float('inf') # initialization
-
-for epoch in range(EPOCHS):
-    train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion)
-    val_loss, val_acc = validation_epoch(model, val_loader, criterion)
-    scheduler.step()
-    print(f'Epoch {epoch+1}/{EPOCHS} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
-    wandb.log({
-        'epoch' : epoch + 1,
-        'train_loss' : train_loss,
-        'train_acc' :  train_acc,
-        'val_loss' : val_loss,
-        'val_acc' : val_acc
-    })
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
-
-model.load_state_dict(torch.load(MODEL_SAVE_PATH))
-test_loss, test_acc = validation_epoch(model, test_loader, criterion)
-wandb.log({
-    'test_loss' : test_loss,
-    'test_acc' : test_acc
-    })
-print(f'Test loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}')
-inference_df = inference(model, train_loader)
+    
+inference_df = inference(model)
 hard_samples = inference_df[
     (inference_df['true_label'] == 1) &
     (inference_df['confidence_ladder'] < CONFIDENCE_THRESHOLD)
 ]
-
 hard_samples.to_csv('hard_samples.csv', index=False)
 wandb.log({'num_hard_samples' : len(hard_samples)})
 wandb.finish()
-
-

@@ -2,3 +2,5 @@
 best_model.pth
 hard_samples.csv
 wandb/
+grad_cam
+yolov8n.pt
