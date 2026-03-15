@@ -12,3 +12,4 @@ yolov8m-oiv7.pt
 yolov8n-oiv7.pt
 Laura/bounding_boxes/
 Laura/bounding_boxes_inference_only/
+best_model.pt
