@@ -23,14 +23,14 @@ LOCATION_PROMPTS = {
     "street" : "a phot of a ladder leaning against a fence with a busy street behind, partially occluded"
 }
 
-IMG_GUIDANCES = [0.5, 0.6, 0.7, 0.8, 0.9] # exclude smaller values to preserve geometry of original
+IMG_GUIDANCES = [0.8, 0.85, 0.9, 0.95, 0.97] # exclude smaller values to preserve geometry of original
 TEXT_GUIDANCE = 10
 RANDOM_SEEDS = [10, 20, 30, 40]
 
 SD_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 
-CLIP_THRESHOLD = 0.20 # the higher the less permissive is the filter
+CLIP_THRESHOLD = 0.50 # the higher the less permissive is the filter
 
 def set_seed(seed: int):
     np.random.seed(seed)
@@ -62,7 +62,7 @@ def load_sd_pipeline(model_id: str, device: str):
 
 def load_clip_model(model_id: str, device: str):
     print(f"Loading CLIP model: {model_id}")
-    model     = CLIPModel.from_pretrained(model_id).to(device)
+    model = CLIPModel.from_pretrained(model_id, use_safetensors=True).to(device)
     processor = CLIPProcessor.from_pretrained(model_id)
     tokenizer = CLIPTokenizer.from_pretrained(model_id)
     return model, processor, tokenizer
