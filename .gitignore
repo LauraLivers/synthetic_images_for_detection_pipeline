@@ -10,6 +10,10 @@ unused_images/
 runs
 yolov8m-oiv7.pt
 yolov8n-oiv7.pt
-Laura/bounding_boxes/
-Laura/bounding_boxes_inference_only/
+Laura/bb_y8m/
+Laura/bb_y8m_inference_only/
+Laura/bb_low_y8m/
 best_model.pt
+Laura/DiffCL_images/
+**/uv.lock
+**/pyproject.toml
