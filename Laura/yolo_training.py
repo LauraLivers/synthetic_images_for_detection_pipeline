@@ -20,7 +20,7 @@ if args.inference_only and args.source is None:
 ### Config Variables
 MODEL_PATH = 'yolov8m-oiv7.pt'
 IMAGE_DIR = 'robo_images'
-CLASS_LABEL = 298
+CLASS_LABEL = 298 # HARDCODED for ladder
 ANNOTATIONS_DIR = 'robo_images/yolo_annotations'
 MODEL_SAVE_PATH = 'best_model.pt'
 DATASET_YAML = 'dataset.yaml'

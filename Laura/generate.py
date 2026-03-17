@@ -1,5 +1,5 @@
 """
-uv run generaty.py --input_dir [root_folder_hard_samples]/ --output_dir [new_output_dir] 
+uv run generaty.py --input_dir [root_folder_hard_samples]/ --output_dir DiffCL_images/[new_output_dir] 
 """
 print("Script started", flush=True)
 import os

@@ -31,6 +31,7 @@ this automatically creates a `.gitignore` and `[dataset.dvc]` file. This exclude
 ```
 yolo task=detect mode=predict model=yolov8m-oiv7.pt source=[path/to/image].jpg conf=0.1
 ``` 
+
 to  make sure the model contains the label `ladder` and can detect ladders $\rightarrow$ use an obvious image to be sure and keep confidence at $0.1$. This will return the image with bounding boxes in `runs/detect/predict[n]`  
 
 ![ladder](../runs/detect/predict4_medium_model_that_worked/1b81499856df49858d2f837de745cda0_front_5_March_2026_13-02.jpg)
