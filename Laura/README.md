@@ -33,7 +33,7 @@ yolo task=detect mode=predict model=yolov8m-oiv7.pt source=[path/to/image].jpg c
 ```
 make sure the model contains the label `ladder` and can detect ladders $\rightarrow$ use an obvious image to be sure and keep confidence at $0.1$. This will return the image with bounding boxes in `runs/detect/predict[n]`  
 
-![ladder](../runs/detect/predict4_medium_model_that_worked/1b81499856df49858d2f837de745cda0_front_5_March_2026_13-02.jpg)
+![ladder](robo_images/1b81499856df49858d2f837de745cda0_front_5_March_2026_13-02.jpg)
 
 6. find label index in model with 
 ```
@@ -43,7 +43,7 @@ and add to `yolo_training.py` as CONFIG_VARIABLE
 
 ### Inference only
 7. run `uv run yolo_training.py --inference_only --source [path/to/dataset]` 
-![yolo no training](/bounding_boxes_inference_only/x_738d187488dc44049db2e3fd8f3227c4_front_5_March_2026_12-57.jpg_bb.png)
+![yolo no training](bb_y8m_inference_only/x_738d187488dc44049db2e3fd8f3227c4_front_5_March_2026_12-57.jpg_bb.png)
 
 #### Results
 - **total images**: 376
@@ -58,7 +58,7 @@ and add to `yolo_training.py` as CONFIG_VARIABLE
 | false negative | 123 ||
 
 ### with training
-![with training](bounding_boxes/1_x_738d187488dc44049db2e3fd8f3227c4_front_5_March_2026_12-57.jpg_bb.png)
+![with training](bb_y8m/1_x_738d187488dc44049db2e3fd8f3227c4_front_5_March_2026_12-57.jpg_bb.png)
 
 - **train set**: 263, **validation set**: 56
 - **test set**: 57
@@ -71,4 +71,17 @@ and add to `yolo_training.py` as CONFIG_VARIABLE
 |false positive | 4 | 4 low confidence only |
 | negative | 29 ||
 | false negative | 0 ||
+
+## Stable Diffusion - Phase 1
+1. manually sort images into "locations" and adapt the prompts before running `generate.py`
+
+### test1
+image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9]
+$\rightarrow$ everything below 0.8 is not photorealistic anymore
+
+### test2
+image_guidance: [0.8, 0.85, 0.9, 0.95, 0.97]
+
+$\Rightarrow$ modify the prompts
+
 
