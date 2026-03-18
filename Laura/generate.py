@@ -23,7 +23,7 @@ LOCATION_PROMPTS = {
     "street" : "a phot of a ladder leaning against a fence with a busy street behind, partially occluded"
 }
 
-IMG_GUIDANCES = [0.8, 0.85, 0.9, 0.95, 0.97] # exclude smaller values to preserve geometry of original
+IMG_GUIDANCES = [0.8, 0.85, 0.9, 0.95] # exclude smaller values to preserve geometry of original
 TEXT_GUIDANCE = 10
 RANDOM_SEEDS = [10, 20, 30, 40]
 
@@ -68,7 +68,7 @@ def load_clip_model(model_id: str, device: str):
     return model, processor, tokenizer
 
 def generate_variant(pipe, image: Image.Image, prompt: str,
-    img_guid: float, # img_guid → how much to preserve the original
+    img_guid: float, # how much to preserve the original
     text_guid: float, seed: int, output_path: Path) -> Image.Image:
     """Generates one variant and saves it. Returns the PIL image."""
     set_seed(seed)
