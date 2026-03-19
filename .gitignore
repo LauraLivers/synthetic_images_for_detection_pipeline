@@ -17,3 +17,4 @@ best_model.pt
 Laura/DiffCL_images/
 **/uv.lock
 **/pyproject.toml
+Laura/img

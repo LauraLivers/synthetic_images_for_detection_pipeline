@@ -1,5 +1,5 @@
 """
-uv run generaty.py --input_dir [root_folder_hard_samples]/ --output_dir DiffCL_images/[new_output_dir] 
+uv run generate.py --input_dir [root_folder_hard_samples]/ --output_dir DiffCL_images/[new_output_dir] 
 """
 print("Script started", flush=True)
 import os
@@ -7,6 +7,7 @@ import csv
 import argparse
 import random
 from pathlib import Path
+from dotenv import load_dotenv
  
 import numpy as np
 import torch
@@ -16,21 +17,35 @@ from transformers import CLIPProcessor, CLIPModel, CLIPTokenizer
  
 from model import StableDiffusionXLImg2ImgPipeline
 
+from diffusers import FluxImg2ImgPipeline
+
 
 LOCATION_PROMPTS = {
-    "concrete" : "a photo of a ladder leaning against a concrete wall surrounded with office building in the background",
-    "park" : "a photo of a ladder in a park, partially hidden by vegetation",
-    "street" : "a phot of a ladder leaning against a fence with a busy street behind, partially occluded"
+    "concrete" : "a 8k real photo: aluminium ladder on the floor leaning against a concrete wall",
+    "park" : "a 8k real photo: a ladder in a park",
+    "street" : "a 8k real photo: a ladder in urban setting"
 }
 
-IMG_GUIDANCES = [0.8, 0.85, 0.9, 0.95] # exclude smaller values to preserve geometry of original
+# finetune
+IMG_GUIDANCES = [0.5, 0.6] # exclude smaller values to preserve geometry of original, not too close to 1
 TEXT_GUIDANCE = 10
-RANDOM_SEEDS = [10, 20, 30, 40]
+RANDOM_SEEDS = [10]
 
-SD_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0"
+# uncomment to switch between models
+# SD_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0"
+# SD_PIPELINE_CLASS = StableDiffusionXLImg2ImgPipeline
+
+SD_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+SD_PIPELINE_CLASS = StableDiffusionXLImg2ImgPipeline
+
+#SD_MODEL = 'black-forest-labs/FLUX.1-schnell' ## needs huggingface login and tokens
+#SD_PIPELINE_CLASS = FluxImg2ImgPipeline
+
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 
 CLIP_THRESHOLD = 0.50 # the higher the less permissive is the filter
+
+load_dotenv()
 
 def set_seed(seed: int):
     np.random.seed(seed)
@@ -42,20 +57,20 @@ def set_seed(seed: int):
         torch.backends.cudnn.benchmark = False
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-def load_sd_pipeline(model_id: str, device: str):
+def load_sd_pipeline(model_id: str, pipeline_class, device: str):
     print(f"Loading SD pipeline: {model_id}")
     if device == "cpu":
-        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+        pipe = pipeline_class.from_pretrained(
             model_id, use_safetensors=True
         ).to(device)
     elif device == "mps":
         # MPS doesn't support float16 variants reliably
-        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+        pipe = pipeline_class.from_pretrained(
             model_id, torch_dtype=torch.float32, use_safetensors=True
         ).to(device)
     else:
         # cuda
-        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+        pipe = pipeline_class.from_pretrained(
             model_id, torch_dtype=torch.float16, variant="fp16", use_safetensors=True
         ).to(device)
     return pipe
@@ -73,7 +88,7 @@ def generate_variant(pipe, image: Image.Image, prompt: str,
     """Generates one variant and saves it. Returns the PIL image."""
     set_seed(seed)
     # strength = 1 - img_guid, so high img_guid = low strength = stays close to original
-    results = pipe(prompt=prompt, image=image, strength=1 - img_guid, guidance_scale=text_guid)
+    results = pipe(prompt=prompt, image=image, strength=1 - img_guid, guidance_scale=text_guid, )
     generated = results.images[0]
     generated.save(output_path)
     return generated
@@ -128,11 +143,11 @@ def process_location(location: str, image_paths: list[Path], prompt: str,
     for img_path in image_paths:
         print(f"\n  [{location}] Processing: {img_path.name}")
         original = Image.open(img_path).convert("RGB") # unnecessary?
-        original_resized = original.resize((768, 512)) # Resize to a consistent size — SDXL works best at multiples of 8
- 
+        #original_resized = original.resize((768, 512)) # Resize to a consistent size — SDXL works best at multiples of 8
+        original_resized = original
         for seed in RANDOM_SEEDS:
             for img_guid in IMG_GUIDANCES:
-                combined_seed = (hash(img_path.name) ^ seed) % (2**32) # Unique seed per (image, seed, guidance) combination
+                combined_seed = (hash(img_path.name) ^ seed) % (2**16) # Unique seed per (image, seed, guidance) combination
  
                 out_filename = f"{img_path.stem}_guid{int(img_guid*100)}_seed{seed}.jpg"
                 out_path = location_out / out_filename
@@ -212,7 +227,7 @@ def main():
                   f"Add it to LOCATION_PROMPTS in generate.py. Skipping.")
  
     # Load models once (outside the loop)
-    pipe = load_sd_pipeline(SD_MODEL, device)
+    pipe = load_sd_pipeline(SD_MODEL, SD_PIPELINE_CLASS, device)
     clip_model, processor, tokenizer = load_clip_model(CLIP_MODEL, device)
  
     all_rows = []
