@@ -129,6 +129,11 @@ def compute_clip_scores(clip_model, processor, tokenizer, original_image: Image.
     img_sim  = float(cosine_similarity(orig_emb, gen_emb)[0][0])
     return text_sim, img_sim
 
+# added to balance text versus image guidance to smooth the results better
+def guidance_scale_for_img_guid(img_guid: float) -> float:
+    strength = 1 - img_guid
+    return round(12.0 - (strength * 6.0), 1)
+
 ### Pipeline
 def process_location(location: str, image_paths: list[Path], prompt: str,
     pipe, clip_model, processor, tokenizer, output_dir: Path, device: str,) -> list[dict]:
@@ -163,7 +168,7 @@ def process_location(location: str, image_paths: list[Path], prompt: str,
                         image=original_resized,
                         prompt=prompt,
                         img_guid=img_guid,
-                        text_guid=TEXT_GUIDANCE,
+                        text_guid=guidance_scale_for_img_guid(img_guid),
                         seed=combined_seed,
                         output_path=out_path,
                     )
