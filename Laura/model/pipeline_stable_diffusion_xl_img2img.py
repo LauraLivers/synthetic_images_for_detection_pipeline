@@ -1157,9 +1157,9 @@ class StableDiffusionXLImg2ImgPipeline(DiffusionPipeline, TextualInversionLoader
             # cast back to fp16 if needed
             if needs_upcasting:
                 self.vae.to(dtype=torch.float16)
-        else:
-            image = latents
-            return StableDiffusionXLPipelineOutput(images=image)
+        # else:
+        #     image = latents
+        #     return StableDiffusionXLPipelineOutput(images=image)
 
 
 

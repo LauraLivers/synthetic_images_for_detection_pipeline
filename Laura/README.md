@@ -22,6 +22,7 @@ this automatically creates a `.gitignore` and `[dataset.dvc]` file. This exclude
 
 ### Label creation for training
 4. annotate all `ladder` images using `label-studio start` and navigate to `http://localhost:8080`
+
 ---
 ## Step 2: Easy vs. Hard Samples
 ### Pretrained Model with class Ladder
@@ -91,15 +92,45 @@ and add the integer found to `yolo_training.py` as CONFIG_VARIABLE
 - Negative Space Control: "Negative: blurry, malformed hands, ...."
 - Weight and Emphasis: "([attribute]:x)
 - Conditional Prompting: "[word | synonym | related concept]"
+$\rightarrow$ ComfyUI specific, won't parse in diffuser directly
 
 
-### test1
-image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9]
+## Prompt 1
+```
+LOCATION_PROMPTS = {
+    "concrete" : "a photo of a ladder leaning against a concrete wall surrounded with office building in the background",
+    "park" : "a photo of a ladder in a park, partially hidden by vegetation",
+    "street" : "a phot of a ladder leaning against a fence with a busy street behind, partially occluded"
+}
+```
+### test1 - sd_xl_refiner (og)
+image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9], no finetuning
 $\rightarrow$ everything below 0.8 is not photorealistic anymore
+![test 1](img/test1.png)
 
-### test2
-image_guidance: [0.8, 0.85, 0.9, 0.95, 0.97]
+### test2 - sd_xl_refiner (og)
+image_guidance: [0.8, 0.85, 0.9, 0.95, 0.97], no finetuning (original images)
+![test 2](img/test2.png)
 
-$\Rightarrow$ modify the prompts
+### test3 - sd_xl_base 
+image_guidance: [0.8, 0.85, 0.9, 0.95]
+
+### test4 - sd_xl_base
+image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9]
+
+### test4 - sd_xl_base + image resizing (1024,576)
+
+
+
+### Balance text2img & img2img
+Balancing means controlling where along that dial each generated sample sits, and ensuring your dataset has coverage across the whole range — not just the two extremes. Concretely:
+
+Denoising strength as a shared axis — img2img denoising strength and text2img guidance scale are both levers on the same underlying spectrum. Treating them as one joint parameter space (rather than two separate modes) lets you interpolate smoothly.
+Proportional mixing by curriculum stage — early stages should be img2img-heavy (low noise, close to real data), late stages text2img-heavy (high diversity). If both are weighted equally throughout, the curriculum loses its meaning.
+Preventing distribution mismatch — unbalanced mixing means your synthetic data doesn't resemble a coherent augmentation of your real data; it looks like two datasets concatenated. Downstream models trained on this will either ignore the synthetic data or overfit to its artifacts.
+
+A practical framing
+Rather than thinking of them as two separate "versions," think of img2img with strength=1.0 as text2img (full noise, no anchor). Your curriculum is then just a schedule over a single strength parameter, and "balancing" means making sure that schedule is intentional and monotonic — not a binary switch between 0.2 and 1.0.
+The repo you're basing on probably treats them as separate pipelines because they're separate API calls, but conceptually they should be one continuum. Bridging that gap is exactly the right instinct.
 
 

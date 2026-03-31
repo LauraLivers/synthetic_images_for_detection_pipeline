@@ -32,7 +32,7 @@ TEXT_GUIDANCE = 10
 RANDOM_SEEDS = [10]
 
 # uncomment to switch between models
-# SD_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0"
+# SD_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0" ## why would they use this one??
 # SD_PIPELINE_CLASS = StableDiffusionXLImg2ImgPipeline
 
 SD_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -41,7 +41,7 @@ SD_PIPELINE_CLASS = StableDiffusionXLImg2ImgPipeline
 #SD_MODEL = 'black-forest-labs/FLUX.1-schnell' ## needs huggingface login and tokens
 #SD_PIPELINE_CLASS = FluxImg2ImgPipeline
 
-CLIP_MODEL = "openai/clip-vit-base-patch32"
+CLIP_MODEL = "openai/clip-vit-base-patch32" # this is not working properly
 
 CLIP_THRESHOLD = 0.50 # the higher the less permissive is the filter
 
@@ -85,11 +85,27 @@ def load_clip_model(model_id: str, device: str):
 def generate_variant(pipe, image: Image.Image, prompt: str,
     img_guid: float, # how much to preserve the original
     text_guid: float, seed: int, output_path: Path) -> Image.Image:
-    """Generates one variant and saves it. Returns the PIL image."""
+    """Generates one variant and saves it. Returns the PIL image.
+        The resizing is hardcoded for Ascento image size (1920 × 1080)"""
+    original_width, original_height = image.size
+    aspect_ratio = original_width / original_height
+    target_pixels = 1024 * 1024
+    target_width = int((target_pixels * aspect_ratio) ** 0.5)
+    target_height = int(target_pixels / target_width)
+    target_width = target_width - (target_width % 8)
+    target_height = target_height - (target_height % 8)
+
+    image_resized = image.resize((target_width, target_height), Image.LANCZOS)
     set_seed(seed)
     # strength = 1 - img_guid, so high img_guid = low strength = stays close to original
-    results = pipe(prompt=prompt, image=image, strength=1 - img_guid, guidance_scale=text_guid, )
+    results = pipe(prompt=prompt, 
+                   image=image_resized, 
+                   strength=1 - img_guid, 
+                   guidance_scale=text_guid, 
+                   original_size=(original_height, original_width),
+                   target_size=(target_height, target_width))
     generated = results.images[0]
+    generated = generated.resize((original_width, original_height), Image.LANCZOS)
     generated.save(output_path)
     return generated
 
