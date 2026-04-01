@@ -118,19 +118,20 @@ image_guidance: [0.8, 0.85, 0.9, 0.95]
 ### test4 - sd_xl_base
 image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9]
 
-### test4 - sd_xl_base + image resizing (1024,576)
+### debug6 - sd_xl_base + image resizing (1024,576) - vae bug 
 
 
+## MoBI
+### 1. 3d-fy ladder images
+- [SAM2](https://github.com/facebookresearch/sam2?tab=readme-ov-file): segment ladders using yolo-bounding boxes for ROI
+- [Depth Anything](https://deepwiki.com/DepthAnything/Depth-Anything-V2/3-installation-and-setup): expand 2D to 3D
+![seg + Depth](MoBI_outputs/ladder_segmentations/verification/4e2241c139e643e7abe0166e8e027287_right_5_March_2026_12-58_ladder00.jpg)
 
-### Balance text2img & img2img
-Balancing means controlling where along that dial each generated sample sits, and ensuring your dataset has coverage across the whole range — not just the two extremes. Concretely:
+if other things withing bounding box it can get tricky
+![seg wrong](MoBI_outputs/ladder_segmentations/verification/3923cd8f90ca4c49ab0eb89f5d7428bf_left_5_March_2026_13-11_ladder00.jpg)
+### 2. identify surfaces for ladder to lean agains
+Depth Anything -  not implemented yet. comes with `run.py` as a template
+![run test](MoBI_outputs/da_test/01ac6461e37f4ee1a2ada6d8ec472aec_front_5_March_2026_13-08.png)
 
-Denoising strength as a shared axis — img2img denoising strength and text2img guidance scale are both levers on the same underlying spectrum. Treating them as one joint parameter space (rather than two separate modes) lets you interpolate smoothly.
-Proportional mixing by curriculum stage — early stages should be img2img-heavy (low noise, close to real data), late stages text2img-heavy (high diversity). If both are weighted equally throughout, the curriculum loses its meaning.
-Preventing distribution mismatch — unbalanced mixing means your synthetic data doesn't resemble a coherent augmentation of your real data; it looks like two datasets concatenated. Downstream models trained on this will either ignore the synthetic data or overfit to its artifacts.
-
-A practical framing
-Rather than thinking of them as two separate "versions," think of img2img with strength=1.0 as text2img (full noise, no anchor). Your curriculum is then just a schedule over a single strength parameter, and "balancing" means making sure that schedule is intentional and monotonic — not a binary switch between 0.2 and 1.0.
-The repo you're basing on probably treats them as separate pipelines because they're separate API calls, but conceptually they should be one continuum. Bridging that gap is exactly the right instinct.
 
 

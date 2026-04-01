@@ -8,7 +8,6 @@ import matplotlib.patches as patches
 from pathlib import Path
 from tqdm import tqdm
 import warnings
-from PIL import Image as PILImage
 import sys
 
 warnings.filterwarnings("ignore")
