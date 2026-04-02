@@ -16,29 +16,28 @@ import warnings
 warnings.filterwarnings("ignore")
 
 BACKGROUNDS_DIR     = "./robo_images/no_ladder"
-OUTPUT_DIR          = "./MoBI_outputs/background3"
+OUTPUT_DIR          = "./MoBI_outputs/background4"
 DEPTH_ANYTHING_REPO = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT    = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL     = "nvidia/segformer-b2-finetuned-ade-512-512"
-LADDER_CSV          = "./MoBI_outputs/ladder_segmentations/ladder_instances.csv"
+LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size2/ladder_instances.csv" # change after each run -.-
 PLACEMENTS_PER_IMAGE = 3
 MIN_REGION_AREA_FRAC = 0.02
+MAX_WALL_HEIGHT_FRAC = 0.75 # bottom N% of the image to be reachable from ground
+GROUND_PROXIMITY_FRAC = 0.15 # within fraction of image height from bottom
+PLACEMENTS_PER_IMAGE = 3 # to avoid too many options for Paint by Example
 
-# Wall pixels must be in the bottom N% of the image to be reachable from ground
-MAX_WALL_HEIGHT_FRAC = 0.75
-# Bottom of placement box must be within this fraction of image height from bottom
-GROUND_PROXIMITY_FRAC = 0.15
 
 # ADE20K 150-class indices vertical structures
 # wall, building, house, fence, railing, column/pillar, skyscraper, hovel/hut, tower
 VALID_SURFACE_CLASSES = {0, 1, 25, 32, 38, 42, 48, 79, 84}
 # ADE20K 150-class indices for vertical surfaces
 # road, grass, sidewalk/pavement, earth/ground, path, dirt track, land/soil
-GROUND_CLASSES = {6, 9, 11, 13, 52, 91, 94}
+GROUND_CLASSES = {3, 6, 9, 11, 13, 52, 91, 94}
 
 # reference objects for ladder size
-# person, door, windowpane
-SCALE_REFERENCE_CLASSES = {12: 1.7, 14: 2.1, 8: 1.5}
+# person, door, windowpane, car, streetlight, pole, van, bicycle
+SCALE_REFERENCE_CLASSES = {12: 1.7, 14: 2.1, 8: 1.5, 20: 1.5, 87: 4.0, 93: 0.9, 102: 2.2, 127: 1.2}
 
 # typical ladder height in meters
 LADDER_HEIGHT_M = 2.0
@@ -91,10 +90,7 @@ def segment_image(processor, model, image_rgb, device):
  
  
 def get_surface_mask(seg_map, valid_classes, img_h, max_height_frac):
-    """
-    Valid surface pixels must belong to a wall/building class AND
-    be in the lower portion of the image (reachable from the ground).
-    """
+    """ valid: intersection of vertical and horizontal surface """
     mask = np.zeros(seg_map.shape, dtype=np.uint8)
     for cls in valid_classes:
         mask[seg_map == cls] = 1
@@ -109,84 +105,42 @@ def get_ground_mask(seg_map, valid_classes):
     for cls in valid_classes:
         mask[seg_map == cls] = 1
     return mask
- 
- 
-def get_largest_regions(binary_mask, min_area_frac, img_area,
-                        depth_map, ground_mask, max_regions=10):
-    # Depth threshold from ground pixels: ground_mean + ground_std
-    ground_pixels = depth_map[ground_mask > 0]
-    if len(ground_pixels) > 0:
-        ground_mean     = float(ground_pixels.mean())
-        ground_std      = float(ground_pixels.std())
-        depth_threshold = ground_mean - ground_std
-    else:
-        depth_threshold = None
- 
-    # Apply depth threshold at pixel level to binary_mask before connected components
-    # This splits regions that span both close and far surfaces
-    if depth_threshold is not None:
-        filtered_mask = binary_mask.copy()
-        filtered_mask[depth_map < depth_threshold] = 0
-    else:
-        filtered_mask = binary_mask
- 
-    labeled, n = scipy_label(filtered_mask)
+
+
+def get_valid_wall_regions(surface_mask, img_area):
+    labeled, n = scipy_label(surface_mask)
     regions = []
-    for i in range(1, n + 1):
+    for i in range(1, n+1):
         region = (labeled == i).astype(np.uint8)
-        area   = int(region.sum())
-        if area < min_area_frac * img_area:
+        area = int(region.sum())
+        if area < MIN_REGION_AREA_FRAC * img_area:
             continue
         ys, xs = np.where(region)
         regions.append((region, area, (float(xs.mean()), float(ys.mean()))))
     regions.sort(key=lambda r: r[1], reverse=True)
-    return regions[:max_regions]
+    return regions[:10]
  
-def estimate_ladder_height(seg_map, depth_map, zone_depth_mean, img_h, ref_classes, ladder_h_m):
-    """ use semantically known objects to estimate ladder size in context"""
-    best_estimates = []
 
-    for cls, real_h_m in ref_classes.items():
-        ref_pixels = np.where(seg_map == cls)
-        if len(ref_pixels[0]) < 50:
+def physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth_mean):
+    estimates = []
+    for cls, ref_h_m in SCALE_REFERENCE_CLASSES.items():
+        cls_ys, cls_xs = np.where(seg_map == cls)
+        if len(cls_ys) < 50:
             continue
-
-        ref_ys = ref_pixels[0]
-        ref_xs = ref_pixels[1]
-        ref_depths = depth_map[ref_ys, ref_xs]
-
-        depth_tol = 0.15
-        close = np.abs(ref_depths - zone_depth_mean) < depth_tol
+        close = np.abs(depth_map[cls_ys, cls_xs] - zone_depth_mean) < 0.15
         if close.sum() < 30:
             continue
-
-        close_ys = ref_ys[close]
-        pixel_h = int(close_ys.max() - close_ys.min())
-        if pixel_h < 5:
+        ref_px_height = float(cls_ys[close].max() - cls_ys[close].min())
+        if ref_px_height < 5:
             continue
-
-        pixels_per_m = pixel_h / real_h_m
-        ladder_px = int(pixels_per_m * ladder_h_m)
-        best_estimates.append(ladder_px)
-
-    if best_estimates:
-        return int(np.median(best_estimates))
-    else:
-        return int(img_h * 0.35) # fallback - get rid of this! hella buggy
+        estimates.append(int((ref_px_height / ref_h_m) * physical_length_m))
+    return int(np.median(estimates)) if estimates else None
 
  
  
-def find_placement_zone(wall_region, ground_mask, depth_map,
-                        scaled_h, scaled_w, img_h, img_w,
-                        ground_proximity_frac, rng):
-    """
-    Find a placement zone where:
-    - the box fits within the wall region
-    - the bottom of the box is near the ground (either ground mask or image bottom)
-    - depth is consistent across the box (coherent flat surface)
-    """
-    ground_proximity_px = int(img_h * ground_proximity_frac)
- 
+def find_placement_zone(wall_region, ground_mask, depth_map, scaled_h, scaled_w, img_h, img_w, rng):
+    """ box fits within the wall region + bottom is near ground + depth is consistent across box """
+    ground_proximity_px = int(img_h * 0.15)
     # Dilate ground mask to allow near-ground placements
     kernel         = np.ones((15, 15), np.uint8)
     ground_dilated = cv2.dilate(ground_mask, kernel, iterations=3)
@@ -234,19 +188,18 @@ def find_placement_zone(wall_region, ground_mask, depth_map,
     return x1, y1, x2, y2, depth_mean
  
  
-def colorize_seg_map(seg_map, surface_classes, ground_classes):
+def colorize_seg_map(seg_map):
     h, w = seg_map.shape
     vis  = np.ones((h, w, 3), dtype=np.uint8) * 40
-    for cls in surface_classes:
+    for cls in VALID_SURFACE_CLASSES:
         vis[seg_map == cls] = [50, 200, 80]   # green = valid wall surface
-    for cls in ground_classes:
+    for cls in GROUND_CLASSES:
         vis[seg_map == cls] = [200, 160, 50]  # orange = ground
     return vis
  
  
-def save_verification_row(image_bgr, depth_map, seg_map, placements,
-                          out_path, image_name):
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, image_name):
+    fig, axes = plt.subplots(1, 5, figsize=(20, 5))
     fig.suptitle(image_name, fontsize=10, color="#ccc")
     fig.patch.set_facecolor("#111")
  
@@ -258,38 +211,46 @@ def save_verification_row(image_bgr, depth_map, seg_map, placements,
     axes[1].imshow(depth_map, cmap="plasma")
     axes[1].set_title("Depth", color="#aaa", fontsize=9)
  
-    axes[2].imshow(colorize_seg_map(seg_map, VALID_SURFACE_CLASSES, GROUND_CLASSES))
+    axes[2].imshow(colorize_seg_map(seg_map))
     axes[2].set_title("Surfaces (green) / Ground (orange)", color="#aaa", fontsize=9)
+
+    ref_vis = image_rgb.copy()
+    for cls in SCALE_REFERENCE_CLASSES:
+        cls_ys, cls_xs = np.where(seg_map == cls)
+        if len(cls_ys) > 0:
+            ref_vis[cls_ys, cls_xs] = [255, 100, 0]
  
-    axes[3].imshow(image_rgb)
+    axes[3].imshow(ref_vis)
+    axes[3].set_title("Reference objects (orange)", color="#aaa", fontsize=9)
+
+    axes[4].imshow(image_rgb)
     colors = ["red", "cyan", "yellow"]
     for i, p in enumerate(placements):
         x1, y1, x2, y2 = p["x1"], p["y1"], p["x2"], p["y2"]
         color = colors[i % len(colors)]
-        axes[3].add_patch(patches.Rectangle(
+        axes[4].add_patch(patches.Rectangle(
             (x1, y1), x2 - x1, y2 - y1,
             linewidth=2, edgecolor=color, facecolor="none"
         ))
-        axes[3].text(x1, max(y1 - 4, 0), f"#{i}", color=color, fontsize=8)
-    axes[3].set_title("Placement zones", color="#aaa", fontsize=9)
+        axes[4].text(x1, max(y1 - 4, 0), f"#{i}", color=color, fontsize=8)
+    axes[4].set_title("Placement zones", color="#aaa", fontsize=9)
+    axes[4].text(p["x1"], max(p["y1"] - 4, 0), f"#{i} {p.get('box_h','?')}px", color=color, fontsize=15)
  
     for ax in axes:
         ax.axis("off")
         ax.set_facecolor("#111")
  
     plt.tight_layout()
-    fig.savefig(str(out_path), dpi=100, bbox_inches="tight", facecolor="#111")
+    fig.savefig(str(out_path), dpi=200, bbox_inches="tight", facecolor="#111")
     plt.close(fig)
  
  
-def save_intermediates(seg_map, surface_mask, ground_mask, out_dir, image_name):
-    seg_vis = colorize_seg_map(seg_map, VALID_SURFACE_CLASSES, GROUND_CLASSES)
-    cv2.imwrite(
-        str(out_dir / f"{image_name}_seg.png"),
-        cv2.cvtColor(seg_vis, cv2.COLOR_RGB2BGR)
-    )
-    cv2.imwrite(str(out_dir / f"{image_name}_surface_mask.png"), surface_mask * 255)
-    cv2.imwrite(str(out_dir / f"{image_name}_ground_mask.png"),  ground_mask  * 255)
+def save_intermediates(seg_map, surface_mask_pre, surface_mask_post, ground_mask, out_dir, image_name):
+    seg_vis = colorize_seg_map(seg_map)
+    cv2.imwrite(str(out_dir / f"{image_name}_seg.png"), cv2.cvtColor(colorize_seg_map(seg_map), cv2.COLOR_RGB2BGR))
+    # cv2.imwrite(str(out_dir / f"{image_name}_surface_before_depth_filter.png"), surface_mask_pre  * 255)
+    # cv2.imwrite(str(out_dir / f"{image_name}_surface_after_depth_filter.png"),  surface_mask_post * 255)
+    # cv2.imwrite(str(out_dir / f"{image_name}_ground_mask.png"),                 ground_mask       * 255)
  
  
 def main():
@@ -307,10 +268,12 @@ def main():
  
     print("Loading SegFormer...")
     seg_processor, seg_model = load_segformer(SEGFORMER_MODEL, device)
+    print(seg_model.config.id2label)
  
-    # print("Loading ladder instances from script 1...")
-    # ladder_df = pd.read_csv(LADDER_CSV, index_col=0)
-    # print(f"  {len(ladder_df)} ladder instances loaded")
+    print("Loading ladder instances from script 1...")
+    ladder_df = pd.read_csv(LADDER_CSV, index_col=0)
+    ladder_df = ladder_df[ladder_df["physical_length_m"].notna()]
+    print(f"  {len(ladder_df)} ladder instances loaded")
  
     image_paths = sorted(Path(BACKGROUNDS_DIR).glob("*.*"))
     image_paths = [p for p in image_paths if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
@@ -328,23 +291,33 @@ def main():
             continue
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         img_h, img_w = image_bgr.shape[:2]
-        img_area     = img_h * img_w
+        # img_area     = img_h * img_w
  
         depth_map    = estimate_depth(depth_model, image_bgr)
         seg_map      = segment_image(seg_processor, seg_model, image_rgb, device)
+        print(f"classes segmentation{seg_map.max()}")
  
         surface_mask = get_surface_mask(seg_map, VALID_SURFACE_CLASSES, img_h, MAX_WALL_HEIGHT_FRAC)
         ground_mask  = get_ground_mask(seg_map, GROUND_CLASSES)
- 
-        save_intermediates(seg_map, surface_mask, ground_mask, intermediates_dir, image_name)
+        surface_mask_pre = surface_mask.copy()
+
+        # ground_pixels = depth_map[ground_mask > 0]
+        # if len(ground_pixels) > 0:
+        #     surface_mask[depth_map < float(ground_pixels.min())] = 0
+        bottom_strip = depth_map[int(img_h * 0.8):, :]
+        depth_threshold = float(bottom_strip.min())
+        surface_mask[depth_map < depth_threshold] = 0
+
+        save_intermediates(seg_map, surface_mask_pre, surface_mask, ground_mask, intermediates_dir, image_name)
  
         kernel       = np.ones((5, 5), np.uint8)
         surface_mask = cv2.morphologyEx(surface_mask, cv2.MORPH_OPEN,  kernel)
         surface_mask = cv2.morphologyEx(surface_mask, cv2.MORPH_CLOSE, kernel)
  
-        wall_regions = get_largest_regions(surface_mask, MIN_REGION_AREA_FRAC, img_area, depth_map, ground_mask)
+        wall_regions = get_valid_wall_regions(surface_mask, img_h * img_w)
         if not wall_regions:
             print(f"  [SKIP] No valid surfaces found in {image_name}")
+            cv2.imwrite(str(out_dir / f"{image_name}_no_surface.png"), image_bgr)
             continue
  
         placements    = []
@@ -353,41 +326,32 @@ def main():
         for region_mask, region_area, _ in wall_regions:
             if placement_idx >= PLACEMENTS_PER_IMAGE:
                 break
- 
-            # # Sample a ladder to get reference dimensions and depth
-            # ladder       = ladder_df.sample(1, random_state=int(rng.integers(0, 9999))).iloc[0]
-            # ladder_h_px  = int(ladder["mask_h"])
-            # ladder_w_px  = int(ladder["mask_w"])
-            # ladder_depth = float(ladder["depth_mean"])
+
  
             # Estimate depth at centre of this wall region
             wall_ys, wall_xs = np.where(region_mask > 0)
-            zone_cx = int(np.clip(wall_xs.mean(), 0, img_w - 1))
-            zone_cy = int(np.clip(wall_ys.mean(), 0, img_h - 1))
-            zone_depth = float(depth_map[zone_cy, zone_cx])
- 
-            # # Scale ladder dimensions to match zone depth
-            # scaled_h = scale_box_to_depth(ladder_h_px, ladder_depth, zone_depth)
-            # scaled_w = int(ladder_w_px * (scaled_h / max(ladder_h_px, 1)))
-            scaled_h = estimate_ladder_height(seg_map, depth_map, zone_depth, img_h, SCALE_REFERENCE_CLASSES, LADDER_HEIGHT_M)
+            zone_depth = float(depth_map[
+                int(np.clip(wall_ys.mean(), 0, img_w - 1)),
+                int(np.clip(wall_xs.mean(), 0, img_w - 1))
+            ])
 
-            # ladder aspect ratio - do we need this?
-            scaled_w = max(int(scaled_h / 6), int(img_w * 0.02))
- 
-            # Clamp to reasonable image fractions
-            scaled_h = int(np.clip(scaled_h, img_h * 0.05, img_h * 0.85))
-            scaled_w = int(np.clip(scaled_w, img_w * 0.01, img_w * 0.25))
+            ladder = ladder_df.sample(1, random_state=int(rng.integers(0, 9999))).iloc[0]
+            physical_length_m = float(ladder["physical_length_m"])
+            box_h = physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth)
+            if box_h is None:
+                continue
+            box_w = int(box_h * float(ladder["mask_w"]) / max(float(ladder["mask_h"]), 1)) 
+
  
             result = find_placement_zone(
                 region_mask, ground_mask, depth_map,
-                scaled_h, scaled_w, img_h, img_w,
-                GROUND_PROXIMITY_FRAC, rng
+                box_h, box_w, img_h, img_w, rng
             )
             if result is None:
                 continue
  
             x1, y1, x2, y2, depth_mean = result
-            placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+            placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "box_h" : box_h})
             records.append({
                 "background_image":  str(img_path),
                 "background_name":   image_name,
@@ -396,7 +360,8 @@ def main():
                 "zone_depth_mean":   round(depth_mean, 4),
                 "zone_w":            x2 - x1,
                 "zone_h":            y2 - y1,
-                "scaled_from_ladder": "scene_context",
+                "ladder_instance":   ladder["instance_id"],
+                "physical_length_m": round(physical_length_m, 3)
             })
             placement_idx += 1
  

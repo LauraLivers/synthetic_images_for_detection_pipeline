@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 IMAGES_DIR      = "./robo_images/ladder"
 LABELS_DIR      = "./robo_images/yolo_annotations/labels"
-OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size"
+OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size2"
 SAM2_REPO       = "./sam2"
 SAM2_CHECKPOINT = "./sam2/checkpoints/sam2.1_hiera_large.pt"
 SAM2_CONFIG     = "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -186,8 +186,28 @@ def mask_to_3d_box(mask, depth_map, K):
     return np.array(corners_3d, dtype=np.float32), [x1, y1, x2, y2]
 
 def estimate_physical_length_m(mask, depth_map, seg_map):
-    ladder_depth_mean = float
-    pass
+    ladder_depth_mean = float(depth_map[mask > 0].mean())
+    ys, xs = np.where(mask > 0)
+    pts = np.stack([xs, ys], axis=1).astype(np.float64)
+    center = pts.mean(axis=0)
+    _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
+    proj = (pts - center) @ eigvecs[:, 1]
+    ladder_px_length = float(proj.max() - proj.min())
+
+    estimates = []
+    for cls, ref_h_m in REFERENCE_HEIGHTS_M.items(): 
+        cls_ys, cls_xs = np.where(seg_map == cls)
+        if len(cls_ys) < 50:
+            continue
+        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.15
+        if close.sum() < 30:
+            continue
+        ref_px_height = float(cls_ys[close].max() - cls_xs[close].min())
+        if ref_px_height < 5:
+            continue
+        estimates.append((ladder_px_length / ref_px_height) * ref_h_m)
+    
+    return round(float(np.median(estimates)), 3) if estimates else None
 
 
 
@@ -277,6 +297,8 @@ def main():
     sam_predictor = load_sam2(SAM2_CHECKPOINT, SAM2_CONFIG, device)
     print("Loading Depth Anything V2...")
     depth_model = load_depth_model(DEPTH_CHECKPOINT, device)
+    print("Loading SegFormer...")
+    seg_processor, seg_model = load_segformer(SEGFORMER_MODEL, device)
 
     image_paths = sorted(Path(IMAGES_DIR).glob("*.*"))
     image_paths = [p for p in image_paths if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
@@ -302,6 +324,7 @@ def main():
             continue
 
         depth_map = estimate_depth(depth_model, image_rgb)
+        seg_map = segment_image(seg_processor, seg_model, image_rgb, device)
 
         for box_idx, box_xyxy in enumerate(boxes):
             instance_id = f"{image_name}_ladder{box_idx:02d}"
@@ -332,6 +355,7 @@ def main():
                 "depth_mean":       round(float(depth_map[mask > 0].mean()), 4),
                 "corners3d_path":   str(corners_dir / f"{instance_id}_corners3d.npy"),
                 "mask_path":        str(masks_dir   / f"{instance_id}_mask.npy"),
+                "physical_length_m" : estimate_physical_length_m(mask, depth_map, seg_map)
             })
 
     if not records:
