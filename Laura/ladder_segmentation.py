@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from pathlib import Path
+from PIL import Image as PILImage
 from tqdm import tqdm
 import warnings
 import sys
@@ -14,25 +15,34 @@ warnings.filterwarnings("ignore")
 
 IMAGES_DIR      = "./robo_images/ladder"
 LABELS_DIR      = "./robo_images/yolo_annotations/labels"
-OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations"
+OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size"
 SAM2_REPO       = "./sam2"
 SAM2_CHECKPOINT = "./sam2/checkpoints/sam2.1_hiera_large.pt"
 SAM2_CONFIG     = "configs/sam2.1/sam2.1_hiera_l.yaml"
 DEPTH_ANYTHING_REPO  = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT     = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
+SEGFORMER_MODEL = "nvidia/segformer-b2-finetuned-ade-512-512"
+
+REFERENCE_HEIGHTS_M = { # verify this 
+    12 : 1.74, # human
+    14 : 2.3, # door
+    8 : 1.5, # window
+    21 : 1.5, # car
+    87 : 4.0, # Streetlamp
+    93 : 0.9, # pole
+}
 
 _sam2_abs  = os.path.abspath(SAM2_REPO)
 _depth_abs = os.path.abspath(DEPTH_ANYTHING_REPO)
  
-# Add both repos to sys.path so their packages are importable
-# without needing to chdir into them
+# sys.path so packages are importable without needing to chdir into them - very annoying setup
 sys.path.insert(0, _sam2_abs)
 sys.path.insert(0, _depth_abs)
  
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from depth_anything_v2.dpt import DepthAnythingV2
- 
+from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
 
 
 def get_device():
@@ -44,6 +54,7 @@ def get_device():
 
 
 def load_yolo_boxes(label_path, img_w, img_h):
+    """ use bb information from DiffCL labelling"""
     boxes = []
     if not os.path.exists(label_path):
         return boxes
@@ -69,6 +80,7 @@ def load_sam2(checkpoint, config, device):
 
 
 def get_mask_from_box(predictor, image_rgb, box_xyxy):
+    """ construct ladder mask inside the bounding box to avoid having false positives """
     predictor.set_image(image_rgb)
     masks, scores, _ = predictor.predict(
         point_coords=None,
@@ -107,6 +119,7 @@ def get_camera_intrinsics(img_w, img_h):
 
 
 def mask_to_3d_box(mask, depth_map, K):
+    """ fake 3rd dimension using PCA to get the principal axis and orientation """
     ys, xs = np.where(mask > 0)
     if len(xs) == 0:
         return None, None
@@ -172,6 +185,10 @@ def mask_to_3d_box(mask, depth_map, K):
  
     return np.array(corners_3d, dtype=np.float32), [x1, y1, x2, y2]
 
+def estimate_physical_length_m(mask, depth_map, seg_map):
+    ladder_depth_mean = float
+    pass
+
 
 
 def draw_3d_box(image_rgb, corners_3d, K):
@@ -224,6 +241,25 @@ def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, i
     plt.tight_layout()
     fig.savefig(str(out_path), dpi=100, bbox_inches="tight", facecolor="#111")
     plt.close(fig)
+
+def load_segformer(model_name, device):
+    processor = SegformerImageProcessor.from_pretrained(model_name)
+    model = SegformerForSemanticSegmentation.from_pretrained(model_name)
+    return processor, model.to(device).eval()
+
+def segment_image(processor, model, image_rgb, device):
+    inputs = processor(images=PILImage.fromarray(image_rgb), return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+    upsampled = torch.nn.functional.interpolate(
+        outputs.logits,
+        size=image_rgb.shape[:2],
+        mode="bilinear",
+        align_corners=False
+    )
+    return upsampled.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int16)
+
 
 
 def main():

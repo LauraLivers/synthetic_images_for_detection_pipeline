@@ -29,10 +29,19 @@ MAX_WALL_HEIGHT_FRAC = 0.75
 # Bottom of placement box must be within this fraction of image height from bottom
 GROUND_PROXIMITY_FRAC = 0.15
 
-# ADE20K 150-class indices for valid ladder surfaces
-VALID_SURFACE_CLASSES = {0, 1, 25, 32, 47, 61, 84, 88, 96}
-# ADE20K classes for ground — used to verify base proximity
-GROUND_CLASSES = {3, 6, 9, 11, 13, 29, 46, 52, 53, 91}
+# ADE20K 150-class indices vertical structures
+# wall, building, house, fence, railing, column/pillar, skyscraper, hovel/hut, tower
+VALID_SURFACE_CLASSES = {0, 1, 25, 32, 38, 42, 48, 79, 84}
+# ADE20K 150-class indices for vertical surfaces
+# road, grass, sidewalk/pavement, earth/ground, path, dirt track, land/soil
+GROUND_CLASSES = {6, 9, 11, 13, 52, 91, 94}
+
+# reference objects for ladder size
+# person, door, windowpane
+SCALE_REFERENCE_CLASSES = {12: 1.7, 14: 2.1, 8: 1.5}
+
+# typical ladder height in meters
+LADDER_HEIGHT_M = 2.0
 
 sys.path.insert(0, os.path.abspath(DEPTH_ANYTHING_REPO))
 from depth_anything_v2.dpt import DepthAnythingV2
@@ -133,15 +142,38 @@ def get_largest_regions(binary_mask, min_area_frac, img_area,
     regions.sort(key=lambda r: r[1], reverse=True)
     return regions[:max_regions]
  
- 
-def scale_box_to_depth(ladder_h_px, ladder_depth_mean, zone_depth_mean):
-    """
-    Scale ladder pixel height to match the depth of the placement zone.
-    If the zone is further away (higher normalized depth), ladder appears smaller.
-    """
-    if zone_depth_mean < 1e-4:
-        return ladder_h_px
-    return int(ladder_h_px * (ladder_depth_mean / zone_depth_mean))
+def estimate_ladder_height(seg_map, depth_map, zone_depth_mean, img_h, ref_classes, ladder_h_m):
+    """ use semantically known objects to estimate ladder size in context"""
+    best_estimates = []
+
+    for cls, real_h_m in ref_classes.items():
+        ref_pixels = np.where(seg_map == cls)
+        if len(ref_pixels[0]) < 50:
+            continue
+
+        ref_ys = ref_pixels[0]
+        ref_xs = ref_pixels[1]
+        ref_depths = depth_map[ref_ys, ref_xs]
+
+        depth_tol = 0.15
+        close = np.abs(ref_depths - zone_depth_mean) < depth_tol
+        if close.sum() < 30:
+            continue
+
+        close_ys = ref_ys[close]
+        pixel_h = int(close_ys.max() - close_ys.min())
+        if pixel_h < 5:
+            continue
+
+        pixels_per_m = pixel_h / real_h_m
+        ladder_px = int(pixels_per_m * ladder_h_m)
+        best_estimates.append(ladder_px)
+
+    if best_estimates:
+        return int(np.median(best_estimates))
+    else:
+        return int(img_h * 0.35) # fallback - get rid of this! hella buggy
+
  
  
 def find_placement_zone(wall_region, ground_mask, depth_map,
@@ -276,9 +308,9 @@ def main():
     print("Loading SegFormer...")
     seg_processor, seg_model = load_segformer(SEGFORMER_MODEL, device)
  
-    print("Loading ladder instances from script 1...")
-    ladder_df = pd.read_csv(LADDER_CSV, index_col=0)
-    print(f"  {len(ladder_df)} ladder instances loaded")
+    # print("Loading ladder instances from script 1...")
+    # ladder_df = pd.read_csv(LADDER_CSV, index_col=0)
+    # print(f"  {len(ladder_df)} ladder instances loaded")
  
     image_paths = sorted(Path(BACKGROUNDS_DIR).glob("*.*"))
     image_paths = [p for p in image_paths if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
@@ -322,11 +354,11 @@ def main():
             if placement_idx >= PLACEMENTS_PER_IMAGE:
                 break
  
-            # Sample a ladder to get reference dimensions and depth
-            ladder       = ladder_df.sample(1, random_state=int(rng.integers(0, 9999))).iloc[0]
-            ladder_h_px  = int(ladder["mask_h"])
-            ladder_w_px  = int(ladder["mask_w"])
-            ladder_depth = float(ladder["depth_mean"])
+            # # Sample a ladder to get reference dimensions and depth
+            # ladder       = ladder_df.sample(1, random_state=int(rng.integers(0, 9999))).iloc[0]
+            # ladder_h_px  = int(ladder["mask_h"])
+            # ladder_w_px  = int(ladder["mask_w"])
+            # ladder_depth = float(ladder["depth_mean"])
  
             # Estimate depth at centre of this wall region
             wall_ys, wall_xs = np.where(region_mask > 0)
@@ -334,9 +366,13 @@ def main():
             zone_cy = int(np.clip(wall_ys.mean(), 0, img_h - 1))
             zone_depth = float(depth_map[zone_cy, zone_cx])
  
-            # Scale ladder dimensions to match zone depth
-            scaled_h = scale_box_to_depth(ladder_h_px, ladder_depth, zone_depth)
-            scaled_w = int(ladder_w_px * (scaled_h / max(ladder_h_px, 1)))
+            # # Scale ladder dimensions to match zone depth
+            # scaled_h = scale_box_to_depth(ladder_h_px, ladder_depth, zone_depth)
+            # scaled_w = int(ladder_w_px * (scaled_h / max(ladder_h_px, 1)))
+            scaled_h = estimate_ladder_height(seg_map, depth_map, zone_depth, img_h, SCALE_REFERENCE_CLASSES, LADDER_HEIGHT_M)
+
+            # ladder aspect ratio - do we need this?
+            scaled_w = max(int(scaled_h / 6), int(img_w * 0.02))
  
             # Clamp to reasonable image fractions
             scaled_h = int(np.clip(scaled_h, img_h * 0.05, img_h * 0.85))
@@ -360,7 +396,7 @@ def main():
                 "zone_depth_mean":   round(depth_mean, 4),
                 "zone_w":            x2 - x1,
                 "zone_h":            y2 - y1,
-                "scaled_from_ladder": ladder["instance_id"],
+                "scaled_from_ladder": "scene_context",
             })
             placement_idx += 1
  
