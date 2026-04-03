@@ -16,7 +16,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 BACKGROUNDS_DIR     = "./robo_images/no_ladder"
-OUTPUT_DIR          = "./MoBI_outputs/background4"
+OUTPUT_DIR          = "./MoBI_outputs/background5_segf_filter"
 DEPTH_ANYTHING_REPO = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT    = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL     = "nvidia/segformer-b2-finetuned-ade-512-512"
@@ -24,7 +24,7 @@ LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size2/ladder_ins
 PLACEMENTS_PER_IMAGE = 3
 MIN_REGION_AREA_FRAC = 0.02
 MAX_WALL_HEIGHT_FRAC = 0.75 # bottom N% of the image to be reachable from ground
-GROUND_PROXIMITY_FRAC = 0.15 # within fraction of image height from bottom
+GROUND_PROXIMITY_FRAC = 0.05 # within fraction of image height from bottom
 PLACEMENTS_PER_IMAGE = 3 # to avoid too many options for Paint by Example
 
 
@@ -86,7 +86,10 @@ def segment_image(processor, model, image_rgb, device):
         mode="bilinear",
         align_corners=False,
     )
-    return upsampled.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int16)
+    probs = torch.nn.functional.softmax(upsampled, dim=1)
+    confidence_map = probs.max(dim=1).values.squeeze(0).cpu().numpy()
+    seg_map = upsampled. argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int16)
+    return seg_map, confidence_map
  
  
 def get_surface_mask(seg_map, valid_classes, img_h, max_height_frac):
@@ -121,13 +124,16 @@ def get_valid_wall_regions(surface_mask, img_area):
     return regions[:10]
  
 
-def physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth_mean):
+def physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth_mean, confidence_map):
     estimates = []
     for cls, ref_h_m in SCALE_REFERENCE_CLASSES.items():
         cls_ys, cls_xs = np.where(seg_map == cls)
         if len(cls_ys) < 50:
             continue
         close = np.abs(depth_map[cls_ys, cls_xs] - zone_depth_mean) < 0.15
+        high_conf = confidence_map[cls_ys, cls_xs] > 0.7
+        close = close & high_conf
+
         if close.sum() < 30:
             continue
         ref_px_height = float(cls_ys[close].max() - cls_ys[close].min())
@@ -164,11 +170,11 @@ def find_placement_zone(wall_region, ground_mask, depth_map, scaled_h, scaled_w,
             continue
  
         # Base of ladder must be near ground or image bottom
-        base_near_bottom = (img_h - 1 - y2) <= ground_proximity_px
+        # base_near_bottom = (img_h - 1 - y2) <= ground_proximity_px
         base_y = min(y2 + 3, img_h - 1)
         base_on_ground = ground_dilated[base_y, max(0, cx - 5):min(img_w, cx + 5)].any()
  
-        if not base_near_bottom and not base_on_ground:
+        if not base_on_ground:
             continue
  
         # Box must mostly overlap wall region
@@ -198,7 +204,7 @@ def colorize_seg_map(seg_map):
     return vis
  
  
-def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, image_name):
+def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, image_name, id2label):
     fig, axes = plt.subplots(1, 5, figsize=(20, 5))
     fig.suptitle(image_name, fontsize=10, color="#ccc")
     fig.patch.set_facecolor("#111")
@@ -219,6 +225,8 @@ def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, i
         cls_ys, cls_xs = np.where(seg_map == cls)
         if len(cls_ys) > 0:
             ref_vis[cls_ys, cls_xs] = [255, 100, 0]
+            cy, cx = int(cls_ys.mean()), int(cls_xs.mean())
+            axes[3].text(cx, cy, id2label.get(cls, str(cls)), color="white", fontsize=15) # name reference object
  
     axes[3].imshow(ref_vis)
     axes[3].set_title("Reference objects (orange)", color="#aaa", fontsize=9)
@@ -233,9 +241,9 @@ def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, i
             linewidth=2, edgecolor=color, facecolor="none"
         ))
         axes[4].text(x1, max(y1 - 4, 0), f"#{i}", color=color, fontsize=8)
-    axes[4].set_title("Placement zones", color="#aaa", fontsize=9)
-    axes[4].text(p["x1"], max(p["y1"] - 4, 0), f"#{i} {p.get('box_h','?')}px", color=color, fontsize=15)
- 
+        axes[4].set_title("Placement zones", color="#aaa", fontsize=9)
+        axes[4].text(p["x1"], max(p["y1"] - 4, 0), f"#{i} {p.get('box_h','?')}px", color=color, fontsize=15)
+    
     for ax in axes:
         ax.axis("off")
         ax.set_facecolor("#111")
@@ -257,18 +265,20 @@ def main():
     device = get_device()
     print(f"Device: {device}")
  
-    out_dir           = Path(OUTPUT_DIR)
-    verify_dir        = out_dir / "verification"
+    out_dir = Path(OUTPUT_DIR)
+    verify_dir = out_dir / "verification"
     intermediates_dir = out_dir / "intermediates"
+    mask_dir = out_dir / "PbE_masks"
     verify_dir.mkdir(parents=True, exist_ok=True)
     intermediates_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir.mkdir(parents=True, exist_ok=True)
  
     print("Loading Depth Anything V2...")
     depth_model = load_depth_model(DEPTH_CHECKPOINT, device)
  
     print("Loading SegFormer...")
     seg_processor, seg_model = load_segformer(SEGFORMER_MODEL, device)
-    print(seg_model.config.id2label)
+    id2label = seg_model.config.id2label
  
     print("Loading ladder instances from script 1...")
     ladder_df = pd.read_csv(LADDER_CSV, index_col=0)
@@ -281,94 +291,96 @@ def main():
         raise FileNotFoundError(f"No images found in {BACKGROUNDS_DIR}")
     print(f"Found {len(image_paths)} background images\n")
  
-    rng     = np.random.default_rng(42)
+    rng = np.random.default_rng(42)
     records = []
  
     for img_path in tqdm(image_paths, desc="Processing"):
         image_name = img_path.stem
-        image_bgr  = cv2.imread(str(img_path))
+        image_bgr = cv2.imread(str(img_path))
         if image_bgr is None:
             continue
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         img_h, img_w = image_bgr.shape[:2]
-        # img_area     = img_h * img_w
  
-        depth_map    = estimate_depth(depth_model, image_bgr)
-        seg_map      = segment_image(seg_processor, seg_model, image_rgb, device)
+        depth_map = estimate_depth(depth_model, image_bgr)
+        seg_map, confidence_map = segment_image(seg_processor, seg_model, image_rgb, device)
         print(f"classes segmentation{seg_map.max()}")
  
         surface_mask = get_surface_mask(seg_map, VALID_SURFACE_CLASSES, img_h, MAX_WALL_HEIGHT_FRAC)
         ground_mask  = get_ground_mask(seg_map, GROUND_CLASSES)
         surface_mask_pre = surface_mask.copy()
 
-        # ground_pixels = depth_map[ground_mask > 0]
-        # if len(ground_pixels) > 0:
-        #     surface_mask[depth_map < float(ground_pixels.min())] = 0
-        bottom_strip = depth_map[int(img_h * 0.8):, :]
-        depth_threshold = float(bottom_strip.min())
-        surface_mask[depth_map < depth_threshold] = 0
+        ground_pixels = depth_map[ground_mask > 0] # exclude far away walls
+        if len(ground_pixels) > 0:
+            depth_threshold = float(np.percentile(ground_pixels, 5))
+            surface_mask[depth_map < depth_threshold] = 0
 
         save_intermediates(seg_map, surface_mask_pre, surface_mask, ground_mask, intermediates_dir, image_name)
  
-        kernel       = np.ones((5, 5), np.uint8)
+        kernel = np.ones((5, 5), np.uint8)
         surface_mask = cv2.morphologyEx(surface_mask, cv2.MORPH_OPEN,  kernel)
         surface_mask = cv2.morphologyEx(surface_mask, cv2.MORPH_CLOSE, kernel)
  
         wall_regions = get_valid_wall_regions(surface_mask, img_h * img_w)
         if not wall_regions:
             print(f"  [SKIP] No valid surfaces found in {image_name}")
-            cv2.imwrite(str(out_dir / f"{image_name}_no_surface.png"), image_bgr)
+            save_verification_row(image_bgr, depth_map, seg_map, [], out_dir / f"{image_name}_no_surface.png", image_name, id2label)
             continue
+
+        combined_region_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        for region_mask, _, _ in wall_regions:
+            combined_region_mask = np.maximum(combined_region_mask, region_mask)
+        region_mask_path = mask_dir / f"{image_name}_mask.png"
+        cv2.imwrite(str(region_mask_path), combined_region_mask * 255)
  
         placements    = []
         placement_idx = 0
+        shuffled_ladders = ladder_df.sample(frac=1, random_state=int(rng.integers(0, 9999))).reset_index(drop=True)
  
-        for region_mask, region_area, _ in wall_regions:
+        for _, ladder in shuffled_ladders.iterrows():
             if placement_idx >= PLACEMENTS_PER_IMAGE:
                 break
-
- 
-            # Estimate depth at centre of this wall region
-            wall_ys, wall_xs = np.where(region_mask > 0)
-            zone_depth = float(depth_map[
-                int(np.clip(wall_ys.mean(), 0, img_w - 1)),
-                int(np.clip(wall_xs.mean(), 0, img_w - 1))
-            ])
-
-            ladder = ladder_df.sample(1, random_state=int(rng.integers(0, 9999))).iloc[0]
             physical_length_m = float(ladder["physical_length_m"])
-            box_h = physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth)
-            if box_h is None:
-                continue
-            box_w = int(box_h * float(ladder["mask_w"]) / max(float(ladder["mask_h"]), 1)) 
 
- 
-            result = find_placement_zone(
-                region_mask, ground_mask, depth_map,
-                box_h, box_w, img_h, img_w, rng
-            )
-            if result is None:
-                continue
- 
-            x1, y1, x2, y2, depth_mean = result
-            placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "box_h" : box_h})
-            records.append({
-                "background_image":  str(img_path),
-                "background_name":   image_name,
-                "placement_idx":     placement_idx,
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "zone_depth_mean":   round(depth_mean, 4),
-                "zone_w":            x2 - x1,
-                "zone_h":            y2 - y1,
-                "ladder_instance":   ladder["instance_id"],
-                "physical_length_m": round(physical_length_m, 3)
-            })
-            placement_idx += 1
- 
+            for region_mask, region_area, _ in wall_regions:    
+                # Estimate depth at centre of this wall region
+                wall_ys, wall_xs = np.where(region_mask > 0)
+                zone_depth = float(depth_map[
+                    int(np.clip(wall_ys.mean(), 0, img_w - 1)),
+                    int(np.clip(wall_xs.mean(), 0, img_w - 1))
+                ])
+
+                box_h = physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth, confidence_map)
+                if box_h is None:
+                    continue
+                box_w = int(box_h * float(ladder["mask_w"]) / max(float(ladder["mask_h"]), 1)) 
+
+                result = find_placement_zone(
+                    region_mask, ground_mask, depth_map,
+                    box_h, box_w, img_h, img_w, rng
+                )
+                if result is None:
+                    continue
+    
+                x1, y1, x2, y2, depth_mean = result
+                placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "box_h" : box_h})
+                records.append({
+                    "background_image":  str(img_path),
+                    "background_name":   image_name,
+                    "placement_idx":     placement_idx,
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "zone_depth_mean":   round(depth_mean, 4),
+                    "zone_w":            x2 - x1,
+                    "zone_h":            y2 - y1,
+                    "ladder_instance":   ladder["instance_id"],
+                    "physical_length_m": round(physical_length_m, 3)
+                })
+                placement_idx += 1
+                break
         if placements:
             save_verification_row(
                 image_bgr, depth_map, seg_map,
-                placements, verify_dir / f"{image_name}.jpg", image_name
+                placements, verify_dir / f"{image_name}.jpg", image_name, id2label
             )
  
     if not records:
