@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 IMAGES_DIR      = "./robo_images/ladder"
 LABELS_DIR      = "./robo_images/yolo_annotations/labels"
-OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size2"
+OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size3"
 SAM2_REPO       = "./sam2"
 SAM2_CHECKPOINT = "./sam2/checkpoints/sam2.1_hiera_large.pt"
 SAM2_CONFIG     = "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -24,12 +24,14 @@ DEPTH_CHECKPOINT     = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.p
 SEGFORMER_MODEL = "nvidia/segformer-b2-finetuned-ade-512-512"
 
 REFERENCE_HEIGHTS_M = { # verify this 
-    12 : 1.74, # human
-    14 : 2.3, # door
+    12 : 1.7, # human
+    14 : 2.1, # door
     8 : 1.5, # window
-    21 : 1.5, # car
+    20 : 1.5, # car
     87 : 4.0, # Streetlamp
     93 : 0.9, # pole
+    102: 2.2, # van
+    127: 1.2 # bicycle
 }
 
 _sam2_abs  = os.path.abspath(SAM2_REPO)

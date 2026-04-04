@@ -16,11 +16,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 BACKGROUNDS_DIR     = "./robo_images/no_ladder"
-OUTPUT_DIR          = "./MoBI_outputs/background5_segf_filter"
+OUTPUT_DIR          = "./MoBI_outputs/background6_segf_filter"
 DEPTH_ANYTHING_REPO = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT    = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL     = "nvidia/segformer-b2-finetuned-ade-512-512"
-LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size2/ladder_instances.csv" # change after each run -.-
+LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size3/ladder_instances.csv" # change after each run -.-
 PLACEMENTS_PER_IMAGE = 3
 MIN_REGION_AREA_FRAC = 0.02
 MAX_WALL_HEIGHT_FRAC = 0.75 # bottom N% of the image to be reachable from ground
