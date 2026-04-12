@@ -1,1 +1,2 @@
 from .pipeline_stable_diffusion_xl_img2img import StableDiffusionXLImg2ImgPipeline
+from .pipeline_stable_diffusion_3_img2img import StableDiffusion3Img2ImgPipelineWithBasePrompt
