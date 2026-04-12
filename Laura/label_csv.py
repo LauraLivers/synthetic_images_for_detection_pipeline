@@ -1,5 +1,6 @@
 """create .csv file mapping the filenames to their label index. 
-Find index with python -c "from ultralytics import YOLO; model = YOLO('yolov8m-oiv7.pt'); print({v: k for k, v in model.names.items() if '[label]' in v})"""
+Find index with python -c "from ultralytics import YOLO; model = YOLO('yolov8m-oiv7.pt'); print({v: k for k, v in model.names.items() if '[label]' in v})
+or run yolo_classes.py"""
 import os
 import csv
 import sys
