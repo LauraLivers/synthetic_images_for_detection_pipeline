@@ -187,7 +187,7 @@ def mask_to_3d_box(mask, depth_map, K):
  
     return np.array(corners_3d, dtype=np.float32), [x1, y1, x2, y2]
 
-def estimate_physical_length_m(mask, depth_map, seg_map):
+def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
     ladder_depth_mean = float(depth_map[mask > 0].mean())
     ys, xs = np.where(mask > 0)
     pts = np.stack([xs, ys], axis=1).astype(np.float64)
@@ -195,16 +195,15 @@ def estimate_physical_length_m(mask, depth_map, seg_map):
     _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
     proj = (pts - center) @ eigvecs[:, 1]
     ladder_px_length = float(proj.max() - proj.min())
-
     estimates = []
     for cls, ref_h_m in REFERENCE_HEIGHTS_M.items(): 
-        cls_ys, cls_xs = np.where(seg_map == cls)
+        cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
         if len(cls_ys) < 50:
             continue
-        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.15
+        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.20
         if close.sum() < 30:
             continue
-        ref_px_height = float(cls_ys[close].max() - cls_xs[close].min())
+        ref_px_height = float(cls_ys.max() - cls_ys.min())
         if ref_px_height < 5:
             continue
         estimates.append((ladder_px_length / ref_px_height) * ref_h_m)
@@ -227,8 +226,9 @@ def draw_3d_box(image_rgb, corners_3d, K):
     return vis
 
 
-def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, instance_id, score, out_path):
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, instance_id, 
+                          score, out_path, seg_map, physical_length_m, id2label, confidence):
+    fig, axes = plt.subplots(1, 5, figsize=(25, 5))
     fig.suptitle(f"{instance_id}  —  SAM2: {score:.3f}", fontsize=10, color="#ccc")
     fig.patch.set_facecolor("#111")
 
@@ -256,16 +256,45 @@ def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, i
     axes[3].imshow(draw_3d_box(image_rgb, corners_3d, K))
     axes[3].set_title("Projected 3D box", color="#aaa", fontsize=9)
 
-    for ax in axes:
-        ax.axis("off")
-        ax.set_facecolor("#111")
+    # Panel 5 — reference objects used + ladder size estimate
+    ax5 = axes[4]
+    vis2 = image_rgb.copy()
+    ladder_depth_mean = float(depth_map[mask > 0].mean())
+    ys, xs = np.where(mask > 0)
+    pts = np.stack([xs, ys], axis=1).astype(np.float64)
+    center = pts.mean(axis=0)
+    _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
+    proj = (pts - center) @ eigvecs[:, 1]
+    ladder_px_length = float(proj.max() - proj.min())
+
+    for cls in REFERENCE_HEIGHTS_M:
+        cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
+        if len(cls_ys) < 50:
+            continue
+        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.15
+        if close.sum() < 30:
+            continue
+        color = np.array(plt.cm.tab10(cls % 10)[:3]) * 255
+        vis2[cls_ys, cls_xs] = (vis2[cls_ys, cls_xs] * 0.3 + color * 0.7).astype(np.uint8)
+        ref_px_height = float(cls_ys.max() - cls_ys.min())
+        estimate = (ladder_px_length / ref_px_height) * REFERENCE_HEIGHTS_M[cls]
+        ax5.text(cls_xs.mean(), cls_ys.mean(),
+                f"{id2label[cls]}: {estimate:.2f}m",
+                color="white", fontsize=7, ha="center", va="center",
+                bbox=dict(facecolor="black", alpha=0.5, pad=1))
+
+    ax5.imshow(vis2)
+    ax5.set_title(f"ladder: {physical_length_m:.2f}m" if physical_length_m else "no refs",
+                color="#aaa", fontsize=9)
+    ax5.axis("off")
+    ax5.set_facecolor("#111")
 
     plt.tight_layout()
     fig.savefig(str(out_path), dpi=100, bbox_inches="tight", facecolor="#111")
     plt.close(fig)
 
 def load_segformer(model_name, device):
-    processor = SegformerImageProcessor.from_pretrained(model_name)
+    processor = SegformerImageProcessor.from_pretrained(model_name, size={"height":1080, "width": 1920})
     model = SegformerForSemanticSegmentation.from_pretrained(model_name)
     return processor, model.to(device).eval()
 
@@ -280,7 +309,7 @@ def segment_image(processor, model, image_rgb, device):
         mode="bilinear",
         align_corners=False
     )
-    return upsampled.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int16)
+    return upsampled.squeeze(0).cpu().numpy()
 
 
 
@@ -326,8 +355,9 @@ def main():
             continue
 
         depth_map = estimate_depth(depth_model, image_rgb)
-        seg_map = segment_image(seg_processor, seg_model, image_rgb, device)
-
+        seg_full = segment_image(seg_processor, seg_model, image_rgb, device)
+        seg_map = seg_full.argmax(axis=0)
+        confidence = torch.softmax(torch.tensor(seg_full), dim=0).numpy().max(axis=0)
         for box_idx, box_xyxy in enumerate(boxes):
             instance_id = f"{image_name}_ladder{box_idx:02d}"
 
@@ -339,9 +369,12 @@ def main():
             np.save(str(corners_dir / f"{instance_id}_corners3d.npy"), corners_3d)
             np.save(str(masks_dir   / f"{instance_id}_mask.npy"), mask)
 
+            physical_length_m = estimate_physical_length_m(mask, depth_map, seg_map, confidence)
+
             save_verification_row(
                 image_rgb, mask, depth_map, corners_3d, box_xyxy, K,
-                instance_id, score, verify_dir / f"{instance_id}.jpg"
+                instance_id, score, verify_dir / f"{instance_id}.jpg", 
+                seg_map, physical_length_m, seg_model.config.id2label, confidence
             )
 
             ys, xs = np.where(mask > 0)
@@ -357,7 +390,7 @@ def main():
                 "depth_mean":       round(float(depth_map[mask > 0].mean()), 4),
                 "corners3d_path":   str(corners_dir / f"{instance_id}_corners3d.npy"),
                 "mask_path":        str(masks_dir   / f"{instance_id}_mask.npy"),
-                "physical_length_m" : estimate_physical_length_m(mask, depth_map, seg_map)
+                "physical_length_m" : estimate_physical_length_m(mask, depth_map, seg_map, confidence)
             })
 
     if not records:

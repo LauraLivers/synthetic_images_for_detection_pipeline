@@ -113,25 +113,33 @@ image_guidance: [0.8, 0.85, 0.9, 0.95, 0.97], no finetuning (original images)
 ![test 2](img/test2.png)
 
 ### test3 - sd_xl_base 
-image_guidance: [0.8, 0.85, 0.9, 0.95]
+image_guidance: [0.5, 0.6]
+![test 3](DiffCL_images/debug4/concrete/39124e8e6ee247469bfa1eda38338a2e_back_5_March_2026_12-58_guid60_seed10.jpg)
 
-### test4 - sd_xl_base
-image_guidance: [0.5, 0.6, 0.7, 0.8, 0.9]
+### debug6 : sd_xl_base + image resizing (1024,576) - vae latent bug + text/image weights
+![test 6](DiffCL_images/debug6_no_else_upcasting_resize_1024/concrete/39124e8e6ee247469bfa1eda38338a2e_back_5_March_2026_12-58_guid60_seed10.jpg)
 
-### debug6 - sd_xl_base + image resizing (1024,576) - vae bug 
+### Model Choice
+[Stable-Diffusion 3.5](https://huggingface.co/stabilityai/stable-diffusion-3.5-large)(Jan 2025)
+uses Multimodel Diffusion Transformer $\rightarrow$ change entire architecture in `model.py` 
+
 
 
 ## MoBI
 ### 1. 3d-fy ladder images
 - [SAM2](https://github.com/facebookresearch/sam2?tab=readme-ov-file): segment ladders using yolo-bounding boxes for ROI
-- [Depth Anything](https://deepwiki.com/DepthAnything/Depth-Anything-V2/3-installation-and-setup): expand 2D to 3D
+- [Depth Anything](https://deepwiki.com/DepthAnything/Depth-Anything-V2/3-installation-and-setup): expand 2D to 3D (PCA math not mathing yet)
 ![seg + Depth](MoBI_outputs/ladder_segmentations/verification/4e2241c139e643e7abe0166e8e027287_right_5_March_2026_12-58_ladder00.jpg)
 
-if other things withing bounding box it can get tricky
+if other things withing bounding box it can get tricky - logic should be rewritten...
 ![seg wrong](MoBI_outputs/ladder_segmentations/verification/3923cd8f90ca4c49ab0eb89f5d7428bf_left_5_March_2026_13-11_ladder00.jpg)
 ### 2. identify surfaces for ladder to lean agains
 Depth Anything -  not implemented yet. comes with `run.py` as a template
+
+- SegFormer ADE20K
+- mask candidates to be used by paint-by-example (connecting point of horizontal and vertical to avoid hovering objects)
+- combine depth information of ladder and depth information of background to scale the placement mask accordingly
 ![run test](MoBI_outputs/da_test/01ac6461e37f4ee1a2ada6d8ec472aec_front_5_March_2026_13-08.png)
+![placement zones](MoBI_outputs/background2/verification/2b95fa3882b443218679c4d1241a7b16_back_5_March_2026_13-09.jpg)
 
-
-
+![placement zone error](MoBI_outputs/background3/verification/fa68e8ad6ef84a2bb52c9d1300c6becf_left_5_March_2026_13-06.jpg)
