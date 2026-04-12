@@ -105,9 +105,11 @@ def estimate_depth(model, image_rgb):
     # infer_image expects BGR numpy array
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     depth = model.infer_image(image_bgr)  # HxW raw relative depth
-    d_min, d_max = depth.min(), depth.max()
-    if d_max - d_min > 1e-6:
-        depth = (depth - d_min) / (d_max - d_min)
+    ## no normalization
+    # d_min, d_max = depth.min(), depth.max() 
+    # if d_max - d_min > 1e-6:
+    #     depth = (depth - d_min) / (d_max - d_min)
+
     return depth.astype(np.float32)
 
 
@@ -188,7 +190,8 @@ def mask_to_3d_box(mask, depth_map, K):
     return np.array(corners_3d, dtype=np.float32), [x1, y1, x2, y2]
 
 def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
-    ladder_depth_mean = float(depth_map[mask > 0].mean())
+    # ladder_depth_mean = float(depth_map[mask > 0].mean())
+    ladder_disparity = float(depth_map[mask > 0].mean())
     ys, xs = np.where(mask > 0)
     pts = np.stack([xs, ys], axis=1).astype(np.float64)
     center = pts.mean(axis=0)
@@ -200,13 +203,22 @@ def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
         cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
         if len(cls_ys) < 50:
             continue
-        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.20
-        if close.sum() < 30:
+        # close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.20
+        # if close.sum() < 30:
+        #     continue
+        # ref_px_height = float(cls_ys.max() - cls_ys.min())
+        # if ref_px_height < 5:
+        #     continue
+        # estimates.append((ladder_px_length / ref_px_height) * ref_h_m)
+
+        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
+        if ref_disparity < 1e-6:
+            continue
+        if abs(ref_disparity - ladder_disparity) > 0.3 * ladder_disparity:
             continue
         ref_px_height = float(cls_ys.max() - cls_ys.min())
-        if ref_px_height < 5:
-            continue
-        estimates.append((ladder_px_length / ref_px_height) * ref_h_m)
+        disparity_correction = ref_disparity / ladder_disparity
+        e
     
     return round(float(np.median(estimates)), 3) if estimates else None
 
