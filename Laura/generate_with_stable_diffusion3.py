@@ -75,7 +75,7 @@ def load_sd_pipeline(model_id: str, device: str):
         pipe = StableDiffusion3Img2ImgPipelineWithBasePrompt.from_pretrained(
             model_id,
             torch_dtype=torch.bfloat16,
-        ).to(device)
+        ) # no to device (will crash...)
         # Remove if you have 24GB+ VRAM
         pipe.enable_model_cpu_offload()
     return pipe
