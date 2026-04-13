@@ -56,22 +56,30 @@ def get_device():
 
 
 def load_yolo_boxes(label_path, img_w, img_h):
-    """ use bb information from DiffCL labelling"""
     boxes = []
     if not os.path.exists(label_path):
         return boxes
-    with open(label_path, "r") as f:
+    with open(label_path, "r", encoding="utf-8-sig") as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) < 5:
                 continue
-            if int(parts[0]) != 0:
+            if int(parts[0].strip().lstrip('\ufeff')) != 0:
                 continue
-            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-            x1 = int(max(0, (cx - w / 2) * img_w))
-            y1 = int(max(0, (cy - h / 2) * img_h))
-            x2 = int(min(img_w, (cx + w / 2) * img_w))
-            y2 = int(min(img_h, (cy + h / 2) * img_h))
+            coords = [float(p) for p in parts[1:]]
+            if len(coords) == 4:
+                cx, cy, w, h = coords
+                x1 = int(max(0, (cx - w / 2) * img_w))
+                y1 = int(max(0, (cy - h / 2) * img_h))
+                x2 = int(min(img_w, (cx + w / 2) * img_w))
+                y2 = int(min(img_h, (cy + h / 2) * img_h))
+            else:
+                xs = [coords[i] * img_w for i in range(0, len(coords), 2)]
+                ys = [coords[i] * img_h for i in range(1, len(coords), 2)]
+                x1 = int(max(0, min(xs)))
+                y1 = int(max(0, min(ys)))
+                x2 = int(min(img_w, max(xs)))
+                y2 = int(min(img_h, max(ys)))
             boxes.append([x1, y1, x2, y2])
     return boxes
 
@@ -190,8 +198,7 @@ def mask_to_3d_box(mask, depth_map, K):
     return np.array(corners_3d, dtype=np.float32), [x1, y1, x2, y2]
 
 def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
-    # ladder_depth_mean = float(depth_map[mask > 0].mean())
-    ladder_disparity = float(depth_map[mask > 0].mean())
+    ladder_disparity = float(np.median(depth_map[mask > 0]))
     ys, xs = np.where(mask > 0)
     pts = np.stack([xs, ys], axis=1).astype(np.float64)
     center = pts.mean(axis=0)
@@ -203,22 +210,13 @@ def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
         cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
         if len(cls_ys) < 50:
             continue
-        # close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.20
-        # if close.sum() < 30:
-        #     continue
-        # ref_px_height = float(cls_ys.max() - cls_ys.min())
-        # if ref_px_height < 5:
-        #     continue
-        # estimates.append((ladder_px_length / ref_px_height) * ref_h_m)
-
         ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
-        if ref_disparity < 1e-6:
-            continue
-        if abs(ref_disparity - ladder_disparity) > 0.3 * ladder_disparity:
+        if abs(ref_disparity - ladder_disparity) > 0.80 * ladder_disparity:
             continue
         ref_px_height = float(cls_ys.max() - cls_ys.min())
-        disparity_correction = ref_disparity / ladder_disparity
-        e
+        if ref_px_height < 5:
+            continue
+        estimates.append((ladder_px_length / ref_px_height) * (ref_disparity / ladder_disparity) * ref_h_m)
     
     return round(float(np.median(estimates)), 3) if estimates else None
 
@@ -271,7 +269,7 @@ def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, i
     # Panel 5 — reference objects used + ladder size estimate
     ax5 = axes[4]
     vis2 = image_rgb.copy()
-    ladder_depth_mean = float(depth_map[mask > 0].mean())
+    ladder_disparity = float(np.median(depth_map[mask > 0]))
     ys, xs = np.where(mask > 0)
     pts = np.stack([xs, ys], axis=1).astype(np.float64)
     center = pts.mean(axis=0)
@@ -283,15 +281,17 @@ def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, i
         cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
         if len(cls_ys) < 50:
             continue
-        close = np.abs(depth_map[cls_ys, cls_xs] - ladder_depth_mean) < 0.15
-        if close.sum() < 30:
+        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
+        if abs(ref_disparity - ladder_disparity) > 0.30 * ladder_disparity:
             continue
         color = np.array(plt.cm.tab10(cls % 10)[:3]) * 255
         vis2[cls_ys, cls_xs] = (vis2[cls_ys, cls_xs] * 0.3 + color * 0.7).astype(np.uint8)
         ref_px_height = float(cls_ys.max() - cls_ys.min())
-        estimate = (ladder_px_length / ref_px_height) * REFERENCE_HEIGHTS_M[cls]
+        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))        
+        disparity_correction = ref_disparity / ladder_disparity
+        estimate = (ladder_px_length / ref_px_height) * disparity_correction * REFERENCE_HEIGHTS_M[cls]
         ax5.text(cls_xs.mean(), cls_ys.mean(),
-                f"{id2label[cls]}: {estimate:.2f}m",
+                f"{id2label[cls]}\ndisp={ref_disparity:.2f} corr={disparity_correction:.2f}\n→{estimate:.2f}m",
                 color="white", fontsize=7, ha="center", va="center",
                 bbox=dict(facecolor="black", alpha=0.5, pad=1))
 
@@ -353,7 +353,10 @@ def main():
 
     for img_path in tqdm(image_paths, desc="Processing"):
         image_name = img_path.stem
-        label_path = Path(LABELS_DIR) / f"{image_name}.txt"
+        matches = list(Path(LABELS_DIR).glob(f"*{image_name}.txt"))
+        if not matches:
+            continue
+        label_path = matches[0]
 
         image_bgr = cv2.imread(str(img_path))
         if image_bgr is None:
@@ -365,6 +368,7 @@ def main():
         boxes = load_yolo_boxes(str(label_path), img_w, img_h)
         if not boxes:
             continue
+        
 
         depth_map = estimate_depth(depth_model, image_rgb)
         seg_full = segment_image(seg_processor, seg_model, image_rgb, device)
