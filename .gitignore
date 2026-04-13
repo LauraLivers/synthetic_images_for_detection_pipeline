@@ -16,7 +16,6 @@ Laura/bb_low_y8m/
 best_model.pt
 Laura/DiffCL_images/
 **/uv.lock
-**/pyproject.toml
 Laura/img
 Laura/MoBI_outputs/
 Laura/sam2
