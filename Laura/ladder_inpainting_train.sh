@@ -1,13 +1,18 @@
 #!/bin/bash
+BASE=$(cd "$(dirname "$0")/.." && pwd)
+MOBI_ROOT=$BASE/MobI
+MY_FOLDER=$BASE/Laura
+LOG_DIR=$BASE/MoBI_outputs/mobi_inpaining1
+PRETRAINED=$BASE/MoBI_outputs/checkpoints/model.ckpt
+CONFIG=$MY_FOLDER/ladder_dataset_mobi.yaml
 
-export PYTHONPATH=/Users/laura/Desktop/ba_thesis/Laura:/Users/laura/Desktop/ba_thesis/MobI:/Users/laura/Desktop/ba_thesis/taming-transformers:$PYTHONPATH
-# Set accelerator: 'mps' (Apple Silicon) or 'cuda' (NVIDIA)
-# 'auto' will detect automatically but explicit is safer
-# ACCELERATOR="auto"
+git clone https://github.com/CompVis/taming-transformers.git $BASE/taming-transformers 2>/dev/null || true
 
-uv run --active python /Users/laura/Desktop/ba_thesis/MobI/main.py \
-    --logdir /Users/laura/Desktop/ba_thesis/MoBI_outputs/mobi_inpaining1 \
-    --pretrained_model /Users/laura/Desktop/ba_thesis/MoBI_outputs/checkpoints/model.ckpt \
-    --base /Users/laura/Desktop/ba_thesis/Laura/ladder_dataset_mobi.yaml \
-    --scale_lr False \
-    --save_top_k 5
+export PYTHONPATH=$MOBI_ROOT:$MY_FOLDER:$BASE/taming-transformers:$PYTHONPATH
+
+uv run --active python $MOBI_ROOT/main.py \
+  --logdir $LOG_DIR \
+  --pretrained_model $PRETRAINED \
+  --base $CONFIG \
+  --scale_lr False \
+  --save_top_k 5

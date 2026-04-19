@@ -8,7 +8,7 @@ image_height: 512
 image_width: 512
 latent_size: 64 # image_width // 8
 
-batch_size: 2 # keep at 2; dataset is small
+batch_size: 1 # keep at 2; dataset is small
 num_workers_per_gpu: 4
 
 # No range view — depth conditioning comes from 3-D bbox corners only
@@ -136,7 +136,7 @@ data:
         expand_mask_ratio: 0.12
         ref_aug: False
         object_area_crop: 0.2
-        num_samples_per_epoch: 64
+        num_samples_per_epoch: 200
         min_sam2_score: 0.6
         val_split: 0.15
         # Camera intrinsics — same as train
@@ -148,6 +148,8 @@ data:
 # Training
 lightning:
   trainer:
-    max_epochs: 60 # more epochs to compensate for small dataset
+    max_epochs: 8 # more epochs to compensate for small dataset
     num_nodes: 1
-    accelerator: 'cpu'
+    accelerator: 'gpu'
+    gpus: "0"
+    precision: 16

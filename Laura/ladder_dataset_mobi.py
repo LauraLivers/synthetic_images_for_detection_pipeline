@@ -255,7 +255,8 @@ class LadderDataset(data.Dataset):
 				"inpaint_image": inpaint_tensor,
 				"inpaint_mask": mask_tensor,
 				"cond": {
-					"ref_image": ref_tensor,  # not unsqueezed, not ref_bbox
+					"ref_image": ref_tensor,
+                    "ref_bbox": bbox_image_coords,
 				},
 			},
 			"lidar": {},
