@@ -118,9 +118,9 @@ def main():
     ref_mask_tight = ref_mask[tight_y1:tight_y2, tight_x1:tight_x2]
 
     # --- LOCALIZED CROP LOGIC ---
-    # Define a square local crop around the placement zone so we don't squish the whole room into 512x512
+    # Define a tight square local crop around the placement zone
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    box_size = max(x2 - x1, y2 - y1) + 200  # Add structural context around the ladder
+    box_size = max(x2 - x1, y2 - y1)  # Tightly fit the longest dimension, no extra padding
     half_size = box_size // 2
 
     crop_y1, crop_y2 = max(0, cy - half_size), min(H, cy + half_size)
