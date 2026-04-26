@@ -16,7 +16,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 BACKGROUNDS_DIR     = "./robo_images/no_ladder"
-OUTPUT_DIR          = "./MoBI_outputs/background6_segf_filter"
+OUTPUT_DIR          = "./MoBI_outputs/background8_segf_filter_small_kernel"
 DEPTH_ANYTHING_REPO = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT    = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL     = "nvidia/segformer-b2-finetuned-ade-512-512"
@@ -126,31 +126,38 @@ def get_valid_wall_regions(surface_mask, img_area):
 
 def physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth_mean, confidence_map):
     estimates = []
+    if zone_depth_mean < 1e-4:
+        return None
+        
     for cls, ref_h_m in SCALE_REFERENCE_CLASSES.items():
         cls_ys, cls_xs = np.where(seg_map == cls)
-        if len(cls_ys) < 50:
+        if len(cls_ys) < 200:  # Strict pixel count
             continue
-        close = np.abs(depth_map[cls_ys, cls_xs] - zone_depth_mean) < 0.15
-        high_conf = confidence_map[cls_ys, cls_xs] > 0.7
-        close = close & high_conf
+            
+        high_conf = confidence_map[cls_ys, cls_xs] > 0.8
+        cls_ys, cls_xs = cls_ys[high_conf], cls_xs[high_conf]
+        if len(cls_ys) < 100:
+            continue
+            
+        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
+        
+        # Avoid extreme depth differences
+        if ref_disparity > 3.0 * zone_depth_mean or ref_disparity < 0.33 * zone_depth_mean:
+            continue
 
-        if close.sum() < 30:
+        ref_px_height = float(cls_ys.max() - cls_ys.min())
+        if ref_px_height < 30:
             continue
-        ref_px_height = float(cls_ys[close].max() - cls_ys[close].min())
-        if ref_px_height < 5:
-            continue
-        estimates.append(int((ref_px_height / ref_h_m) * physical_length_m))
+            
+        # px_ladder = px_ref * (H_ladder / H_ref) * (disp_ladder / disp_ref)
+        est = ref_px_height * (physical_length_m / ref_h_m) * (zone_depth_mean / ref_disparity)
+        estimates.append(int(est))
+        
     return int(np.median(estimates)) if estimates else None
 
  
- 
 def find_placement_zone(wall_region, ground_mask, depth_map, scaled_h, scaled_w, img_h, img_w, rng):
-    """ box fits within the wall region + bottom is near ground + depth is consistent across box """
-    ground_proximity_px = int(img_h * 0.15)
-    # Dilate ground mask to allow near-ground placements
-    kernel         = np.ones((15, 15), np.uint8)
-    ground_dilated = cv2.dilate(ground_mask, kernel, iterations=3)
- 
+    """ box fits within the wall region + bottom is securely snapped to the oriented ground slope """
     wall_ys, wall_xs = np.where(wall_region > 0)
     if len(wall_xs) == 0:
         return None
@@ -159,39 +166,57 @@ def find_placement_zone(wall_region, ground_mask, depth_map, scaled_h, scaled_w,
     for _ in range(500):
         idx = rng.integers(0, len(wall_xs))
         cx  = int(wall_xs[idx])
-        cy  = int(wall_ys[idx])
  
         x1 = max(0, cx - scaled_w // 2)
-        y2 = min(img_h - 1, cy + scaled_h // 2)
-        y1 = max(0, y2 - scaled_h)
         x2 = min(img_w - 1, x1 + scaled_w)
  
-        if (x2 - x1) < scaled_w * 0.5 or (y2 - y1) < scaled_h * 0.5:
+        # Find the ground line explicitly across the width of the bounding box
+        search_roi = ground_mask[:, x1:x2]
+        ground_top_ys = np.argmax(search_roi > 0, axis=0)
+        
+        # Filter out columns where no ground was found (argmax returns 0 if all are 0)
+        valid_cols = (search_roi[ground_top_ys, np.arange(x2-x1)] > 0)
+        if valid_cols.sum() < (scaled_w * 0.5):  # Need ground under at least half the object
             continue
+            
+        # Compute ground slope using a line fit through the valid ground boundary points
+        xs_valid = np.arange(x1, x2)[valid_cols]
+        ys_valid = ground_top_ys[valid_cols]
+        slope, intercept = np.polyfit(xs_valid, ys_valid, 1)
+        
+        # Calculate sloped y2 corner anchors (sunken 10px into the ground)
+        y2_left_raw = int(slope * x1 + intercept) + 10
+        y2_right_raw = int(slope * x2 + intercept) + 10
+        
+        y2_left = np.clip(y2_left_raw, 0, img_h - 1)
+        y2_right = np.clip(y2_right_raw, 0, img_h - 1)
+        
+        # Use the highest point of the sloped bottom to define the top of the box
+        y2_min = min(y2_left, y2_right)
+        y1 = max(0, y2_min - scaled_h)
  
-        # Base of ladder must be near ground or image bottom
-        # base_near_bottom = (img_h - 1 - y2) <= ground_proximity_px
-        base_y = min(y2 + 3, img_h - 1)
-        base_on_ground = ground_dilated[base_y, max(0, cx - 5):min(img_w, cx + 5)].any()
- 
-        if not base_on_ground:
+        if (x2 - x1) < scaled_w * 0.5 or (y2_min - y1) < scaled_h * 0.5:
             continue
  
         # Box must mostly overlap wall region
-        if wall_region[y1:y2, x1:x2].mean() < 0.4:
+        # Use a simple bounding rect for the overlap check
+        y2_max = max(y2_left, y2_right)
+        if wall_region[y1:y2_max, x1:x2].mean() < 0.4:
             continue
  
-        box_depth  = depth_map[y1:y2, x1:x2]
+        box_depth  = depth_map[y1:y2_max, x1:x2]
         depth_std  = float(box_depth.std())
         depth_mean = float(box_depth.mean())
-        candidates.append((depth_std, x1, y1, x2, y2, depth_mean))
+        
+        # Store left/right anchors instead of a flat y2
+        candidates.append((depth_std, x1, y1, x2, y2_left, y2_right, depth_mean))
  
     if not candidates:
         return None
  
     candidates.sort(key=lambda c: c[0])
-    _, x1, y1, x2, y2, depth_mean = candidates[0]
-    return x1, y1, x2, y2, depth_mean
+    _, x1, y1, x2, y2_l, y2_r, depth_mean = candidates[0]
+    return x1, y1, x2, y2_l, y2_r, depth_mean
  
  
 def colorize_seg_map(seg_map):
@@ -235,9 +260,13 @@ def save_verification_row(image_bgr, depth_map, seg_map, placements, out_path, i
     colors = ["red", "cyan", "yellow"]
     for i, p in enumerate(placements):
         x1, y1, x2, y2 = p["x1"], p["y1"], p["x2"], p["y2"]
+        y2_l, y2_r = p.get("y2_left", y2), p.get("y2_right", y2)
         color = colors[i % len(colors)]
-        axes[4].add_patch(patches.Rectangle(
-            (x1, y1), x2 - x1, y2 - y1,
+        
+        # Draw oriented polygon instead of flat rectangle
+        poly = np.array([[x1, y1], [x2, y1], [x2, y2_r], [x1, y2_l]], dtype=np.int32)
+        axes[4].add_patch(patches.Polygon(
+            poly, closed=True,
             linewidth=2, edgecolor=color, facecolor="none"
         ))
         axes[4].text(x1, max(y1 - 4, 0), f"#{i}", color=color, fontsize=8)
@@ -336,7 +365,7 @@ def main():
         placements    = []
         placement_idx = 0
         shuffled_ladders = ladder_df.sample(frac=1, random_state=int(rng.integers(0, 9999))).reset_index(drop=True)
- 
+
         for _, ladder in shuffled_ladders.iterrows():
             if placement_idx >= PLACEMENTS_PER_IMAGE:
                 break
@@ -362,13 +391,17 @@ def main():
                 if result is None:
                     continue
     
-                x1, y1, x2, y2, depth_mean = result
-                placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "box_h" : box_h})
+                x1, y1, x2, y2_left, y2_right, depth_mean = result
+                # Just store max y2 for simple crop boundaries in downstream scripts,
+                # but keep the precise anchors if you want to apply shearing/warping later.
+                y2 = max(y2_left, y2_right)
+                placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "y2_left": y2_left, "y2_right": y2_right, "box_h" : box_h})
                 records.append({
                     "background_image":  str(img_path),
                     "background_name":   image_name,
                     "placement_idx":     placement_idx,
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "y2_left": y2_left, "y2_right": y2_right,
                     "zone_depth_mean":   round(depth_mean, 4),
                     "zone_w":            x2 - x1,
                     "zone_h":            y2 - y1,
@@ -392,7 +425,7 @@ def main():
     print(f"\nFound {len(records)} placement zones across {len(image_paths)} images.")
     print(f"Verification : {verify_dir}")
     print(f"Intermediates: {intermediates_dir}")
-    print(f"CSV          : {out_dir / 'placements.csv'}")
+    print(f"CSV          : {out_dir / 'placements_new.csv'}")
  
  
 if __name__ == "__main__":

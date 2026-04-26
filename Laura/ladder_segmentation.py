@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 IMAGES_DIR      = "./robo_images/ladder"
 LABELS_DIR      = "./robo_images/yolo_annotations/labels"
-OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size3"
+OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size4_debug"
 SAM2_REPO       = "./sam2"
 SAM2_CHECKPOINT = "./sam2/checkpoints/sam2.1_hiera_large.pt"
 SAM2_CONFIG     = "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -199,26 +199,53 @@ def mask_to_3d_box(mask, depth_map, K):
 
 def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
     ladder_disparity = float(np.median(depth_map[mask > 0]))
+    if ladder_disparity < 1e-4:
+        return None, []
+        
     ys, xs = np.where(mask > 0)
     pts = np.stack([xs, ys], axis=1).astype(np.float64)
     center = pts.mean(axis=0)
     _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
     proj = (pts - center) @ eigvecs[:, 1]
     ladder_px_length = float(proj.max() - proj.min())
+    
     estimates = []
+    details = []
+    
     for cls, ref_h_m in REFERENCE_HEIGHTS_M.items(): 
         cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
-        if len(cls_ys) < 50:
+        if len(cls_ys) < 200:  
             continue
         ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
-        if abs(ref_disparity - ladder_disparity) > 0.80 * ladder_disparity:
+        
+        # Avoid extreme depth differences where the DepthAnything 'b' shift dominates
+        if ref_disparity > 3.0 * ladder_disparity or ref_disparity < 0.33 * ladder_disparity:
             continue
+            
         ref_px_height = float(cls_ys.max() - cls_ys.min())
-        if ref_px_height < 5:
+        # Increase minimum pixel height to ignore tiny SegFormer misclassifications
+        if ref_px_height < 50:  
             continue
-        estimates.append((ladder_px_length / ref_px_height) * (ref_disparity / ladder_disparity) * ref_h_m)
+            
+        disparity_correction = ref_disparity / ladder_disparity
+        est = (ladder_px_length / ref_px_height) * disparity_correction * ref_h_m
+        
+        # Sanity check: keep only physically plausible ladder sizes (0.5m to 6.0m)
+        if 0.5 <= est <= 6.0:
+            estimates.append(est)
+            details.append({
+                "cls": cls,
+                "cx": float(cls_xs.mean()),
+                "cy": float(cls_ys.mean()),
+                "disp": ref_disparity,
+                "corr": disparity_correction,
+                "est": est,
+                "mask_ys": cls_ys,
+                "mask_xs": cls_xs
+            })
     
-    return round(float(np.median(estimates)), 3) if estimates else None
+    final_val = round(float(np.median(estimates)), 3) if estimates else None
+    return final_val, details
 
 
 
@@ -237,7 +264,7 @@ def draw_3d_box(image_rgb, corners_3d, K):
 
 
 def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, instance_id, 
-                          score, out_path, seg_map, physical_length_m, id2label, confidence):
+                          score, out_path, seg_map, physical_length_m, ref_details, id2label, confidence):
     fig, axes = plt.subplots(1, 5, figsize=(25, 5))
     fig.suptitle(f"{instance_id}  —  SAM2: {score:.3f}", fontsize=10, color="#ccc")
     fig.patch.set_facecolor("#111")
@@ -255,43 +282,49 @@ def save_verification_row(image_rgb, mask, depth_map, corners_3d, box_xyxy, K, i
     axes[1].imshow(overlay)
     axes[1].set_title("SAM2 mask", color="#aaa", fontsize=9)
 
-    axes[2].imshow(depth_map, cmap="plasma")
+    # Panel 3: Depth + Mask Contour + Projected 3D Box
+    # Create a base depth visualization, properly normalized to [0, 1]
+    d_min, d_max = depth_map.min(), depth_map.max()
+    norm_depth = (depth_map - d_min) / (d_max - d_min + 1e-6)
+    depth_vis = (plt.cm.plasma(norm_depth)[:, :, :3] * 255).astype(np.uint8)
+    
+    # Draw the 3D box onto the perfectly scaled depth map
+    depth_vis_with_box = draw_3d_box(depth_vis, corners_3d, K)
+    axes[2].imshow(depth_vis_with_box)
+    
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for cnt in contours:
         cnt = cnt.squeeze()
         if cnt.ndim == 2:
             axes[2].plot(cnt[:, 0], cnt[:, 1], "w-", linewidth=1.5)
-    axes[2].set_title("Depth + mask contour", color="#aaa", fontsize=9)
+    axes[2].set_title("Depth + Mask Contour + 3D Box", color="#aaa", fontsize=9)
 
-    axes[3].imshow(draw_3d_box(image_rgb, corners_3d, K))
-    axes[3].set_title("Projected 3D box", color="#aaa", fontsize=9)
-
-    # Panel 5 — reference objects used + ladder size estimate
-    ax5 = axes[4]
-    vis2 = image_rgb.copy()
-    ladder_disparity = float(np.median(depth_map[mask > 0]))
-    ys, xs = np.where(mask > 0)
-    pts = np.stack([xs, ys], axis=1).astype(np.float64)
-    center = pts.mean(axis=0)
-    _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
-    proj = (pts - center) @ eigvecs[:, 1]
-    ladder_px_length = float(proj.max() - proj.min())
-
+    # Panel 4: Detected SegFormer Reference Objects
+    ref_vis = image_rgb.copy()
     for cls in REFERENCE_HEIGHTS_M:
         cls_ys, cls_xs = np.where((seg_map == cls) & (confidence > 0.8))
-        if len(cls_ys) < 50:
-            continue
-        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))
-        if abs(ref_disparity - ladder_disparity) > 0.30 * ladder_disparity:
-            continue
+        if len(cls_ys) > 50:
+            color = np.array(plt.cm.tab10(cls % 10)[:3]) * 255
+            ref_vis[cls_ys, cls_xs] = (ref_vis[cls_ys, cls_xs] * 0.3 + color * 0.7).astype(np.uint8)
+            cy, cx = int(cls_ys.mean()), int(cls_xs.mean())
+            axes[3].text(cx, cy, id2label.get(cls, str(cls)), color="white", fontsize=8, ha="center", va="center", bbox=dict(facecolor="black", alpha=0.5, pad=1))
+            
+    axes[3].imshow(ref_vis)
+    axes[3].set_title("Detected Reference Objects (>0.8 conf)", color="#aaa", fontsize=9)
+
+    # Panel 5 — reference objects used + ladder size estimate (Filtered)
+    ax5 = axes[4]
+    vis2 = image_rgb.copy()
+    
+    # Exclusively draw the robust reference objects that passed the filter
+    for det in ref_details:
+        cls = det["cls"]
+        cls_ys, cls_xs = det["mask_ys"], det["mask_xs"]
         color = np.array(plt.cm.tab10(cls % 10)[:3]) * 255
         vis2[cls_ys, cls_xs] = (vis2[cls_ys, cls_xs] * 0.3 + color * 0.7).astype(np.uint8)
-        ref_px_height = float(cls_ys.max() - cls_ys.min())
-        ref_disparity = float(np.median(depth_map[cls_ys, cls_xs]))        
-        disparity_correction = ref_disparity / ladder_disparity
-        estimate = (ladder_px_length / ref_px_height) * disparity_correction * REFERENCE_HEIGHTS_M[cls]
-        ax5.text(cls_xs.mean(), cls_ys.mean(),
-                f"{id2label[cls]}\ndisp={ref_disparity:.2f} corr={disparity_correction:.2f}\n→{estimate:.2f}m",
+        
+        ax5.text(det["cx"], det["cy"],
+                f"{id2label[cls]}\ndisp={det['disp']:.2f} corr={det['corr']:.2f}\n→{det['est']:.2f}m",
                 color="white", fontsize=7, ha="center", va="center",
                 bbox=dict(facecolor="black", alpha=0.5, pad=1))
 
@@ -385,12 +418,12 @@ def main():
             np.save(str(corners_dir / f"{instance_id}_corners3d.npy"), corners_3d)
             np.save(str(masks_dir   / f"{instance_id}_mask.npy"), mask)
 
-            physical_length_m = estimate_physical_length_m(mask, depth_map, seg_map, confidence)
+            physical_length_m, ref_details = estimate_physical_length_m(mask, depth_map, seg_map, confidence)
 
             save_verification_row(
                 image_rgb, mask, depth_map, corners_3d, box_xyxy, K,
                 instance_id, score, verify_dir / f"{instance_id}.jpg", 
-                seg_map, physical_length_m, seg_model.config.id2label, confidence
+                seg_map, physical_length_m, ref_details, seg_model.config.id2label, confidence
             )
 
             ys, xs = np.where(mask > 0)
@@ -406,7 +439,7 @@ def main():
                 "depth_mean":       round(float(depth_map[mask > 0].mean()), 4),
                 "corners3d_path":   str(corners_dir / f"{instance_id}_corners3d.npy"),
                 "mask_path":        str(masks_dir   / f"{instance_id}_mask.npy"),
-                "physical_length_m" : estimate_physical_length_m(mask, depth_map, seg_map, confidence)
+                "physical_length_m" : physical_length_m
             })
 
     if not records:
