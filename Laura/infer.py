@@ -128,6 +128,17 @@ def main():
     cv2.rectangle(mask_bbox_vis, (tight_x1, tight_y1), (tight_x2, tight_y2), (255, 0, 255), 4)
     # Draw border representing the full reference image size in YELLOW
     cv2.rectangle(mask_bbox_vis, (0, 0), (ref_W-1, ref_H-1), (0, 255, 255), 6)
+    
+    # Calculate and document the exact shrink percentage
+    ladder_w = tight_x2 - tight_x1
+    ladder_h = tight_y2 - tight_y1
+    w_ratio = ladder_w / ref_W * 100
+    h_ratio = ladder_h / ref_H * 100
+    cv2.putText(mask_bbox_vis, f"Ladder is {w_ratio:.1f}% W, {h_ratio:.1f}% H of full image", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+    
+    print(f"\n[DEBUG CONCLUSION] Ladder object is {w_ratio:.1f}% W x {h_ratio:.1f}% H of the full reference image.")
+    print("[DEBUG CONCLUSION] Mapping the FULL image into the placement box shrinks the ladder by this exact margin.\n")
+
     cv2.imwrite("MoBI_outputs/debug/debug_00e_mask_tight_vs_full.png", mask_bbox_vis)
     # ---------------------------------------------------------
 
