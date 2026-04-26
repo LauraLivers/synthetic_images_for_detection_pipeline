@@ -93,22 +93,11 @@ def main():
     placement = load_placement(PLACEMENTS_CSV, BACKGROUND_IMG)
     x1, y1, x2, y2 = int(placement.x1), int(placement.y1), int(placement.x2), int(placement.y2)
     print(f"Placement zone: ({x1},{y1}) -> ({x2},{y2})")
-    
-    # --- VISUAL DEBUGGING: PLACEMENT ZONE ---
-    os.makedirs("MoBI_outputs/debug", exist_ok=True)
-    bg_debug = bg_bgr.copy()
-    cv2.rectangle(bg_debug, (x1, y1), (x2, y2), (0, 255, 0), 3)
-    cv2.imwrite("MoBI_outputs/debug/debug_00a_placement_on_bg.png", bg_debug)
-    # ----------------------------------------
 
     # load reference ladder image, mask, crop
     ref_bgr = cv2.imread(REFERENCE_IMG)
     ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
     ref_H, ref_W = ref_rgb.shape[:2]
-    
-    # --- VISUAL DEBUGGING: REFERENCE LADDER CROP ---
-    cv2.imwrite("MoBI_outputs/debug/debug_00b_reference_raw.png", ref_bgr)
-    # -----------------------------------------------
 
     instances = pd.read_csv(LADDER_INSTANCES_CSV, index_col=0)
     ref_row  = instances[instances["image_path"] == REFERENCE_IMG].iloc[0]
@@ -118,56 +107,18 @@ def main():
     pad      = 10
     ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
     
-    # --- VISUAL DEBUGGING: TIGHT MASK VS FULL IMAGE FORMAT ---
-    # This will prove if resizing the full image into the placement box 
-    # compresses the ladder because of excessive empty padding in the reference image.
-    mask_bbox_vis = ref_bgr.copy()
-    tight_x1, tight_y1 = xs.min(), ys.min()
-    tight_x2, tight_y2 = xs.max(), ys.max()
-    # Draw tight bounding box around just the ladder in MAGENTA
-    cv2.rectangle(mask_bbox_vis, (tight_x1, tight_y1), (tight_x2, tight_y2), (255, 0, 255), 4)
-    # Draw border representing the full reference image size in YELLOW
-    cv2.rectangle(mask_bbox_vis, (0, 0), (ref_W-1, ref_H-1), (0, 255, 255), 6)
-    
-    # Calculate and document the exact shrink percentage
-    ladder_w = tight_x2 - tight_x1
-    ladder_h = tight_y2 - tight_y1
-    w_ratio = ladder_w / ref_W * 100
-    h_ratio = ladder_h / ref_H * 100
-    cv2.putText(mask_bbox_vis, f"Ladder is {w_ratio:.1f}% W, {h_ratio:.1f}% H of full image", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-    
-    print(f"\n[DEBUG CONCLUSION] Ladder object is {w_ratio:.1f}% W x {h_ratio:.1f}% H of the full reference image.")
-    print("[DEBUG CONCLUSION] Mapping the FULL image into the placement box shrinks the ladder by this exact margin.\n")
-
-    cv2.imwrite("MoBI_outputs/debug/debug_00e_mask_tight_vs_full.png", mask_bbox_vis)
-    # ---------------------------------------------------------
-
-    # --- VISUAL DEBUGGING: SCALE CLASH PROOF ---
-    # Paste the RAW, unscaled reference crop onto the background to visually compare
-    # the original pixel size vs the tiny placement bounding box.
-    scale_clash_vis = bg_bgr.copy()
-    c_h, c_w = ref_crop.shape[:2]
-    # Try to safely paste it near the placement zone for comparison
-    paste_y2 = min(H, y1 + c_h)
-    paste_x2 = min(W, x1 + c_w)
-    actual_h = paste_y2 - y1
-    actual_w = paste_x2 - x1
-    
-    if actual_h > 0 and actual_w > 0:
-        scale_clash_vis[y1:paste_y2, x1:paste_x2] = cv2.cvtColor(ref_crop[:actual_h, :actual_w], cv2.COLOR_RGB2BGR)
-        # Draw the target placement zone in RED (what it shrinks down to)
-        cv2.rectangle(scale_clash_vis, (x1, y1), (x2, y2), (0, 0, 255), 4)
-        # Draw the original ladder's actual footprint in BLUE (what it starts as)
-        cv2.rectangle(scale_clash_vis, (x1, y1), (paste_x2, paste_y2), (255, 0, 0), 4)
-    cv2.imwrite("MoBI_outputs/debug/debug_00d_scale_clash_comparison.png", scale_clash_vis)
-    # -------------------------------------------
-
     ref_pil  = Image.fromarray(ref_crop).resize((224, 224))
     ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
 
-    # build inpaint inputs from reference image and its segmentation mask
+    # get tight mask to fix scaling issue 
+    tight_y1, tight_y2 = ys.min(), ys.max() + 1
+    tight_x1, tight_x2 = xs.min(), xs.max() + 1
+    ref_mask_tight = ref_mask[tight_y1:tight_y2, tight_x1:tight_x2]
+
+    # build inpaint inputs using background and tight mask
     ref_mask_placed = np.zeros((H, W), dtype=np.uint8)
-    ref_mask_placed[y1:y2, x1:x2] = cv2.resize(ref_mask.astype(np.uint8), (x2-x1, y2-y1), interpolation=cv2.INTER_NEAREST)
+    ref_mask_placed[y1:y2, x1:x2] = cv2.resize(ref_mask_tight.astype(np.uint8), (x2-x1, y2-y1), interpolation=cv2.INTER_NEAREST)
+    
     bg_pil      = Image.fromarray(bg_rgb).resize((IMAGE_SIZE, IMAGE_SIZE))
     mask_pil    = Image.fromarray(ref_mask_placed * 255).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
     bg_tensor   = get_tensor()(bg_pil).unsqueeze(0).to(device)
@@ -188,49 +139,10 @@ def main():
     corners2d[:, 2] = np.clip(corners2d[:, 2] / 25.0 - 1.0, -1, 1)
     bbox_coords = torch.tensor(corners2d, dtype=torch.float32).unsqueeze(0).to(device)
 
-    # --- VISUAL DEBUGGING: 3D TO 2D CORNERS ON REFERENCE ---
-    ref_bbox_debug = ref_bgr.copy()
-    for (px, py, pz) in corners2d:
-        cx, cy = int(px * ref_W), int(py * ref_H)
-        cv2.circle(ref_bbox_debug, (cx, cy), 5, (0, 0, 255), -1)
-    cv2.imwrite("MoBI_outputs/debug/debug_00c_projected_corners.png", ref_bbox_debug)
-    # -------------------------------------------------------
-
-    # --- DEBUGGING HIGHLIGHT START ---
-    print("[DEBUG] OVERWRITE WARNING: bg_tensor, mask_tensor, and inpaint_tensor are being reassigned here")
-    print("[DEBUG] They previously held the empty background image but are now being replaced by the reference ladder image.")
-    # --- DEBUGGING HIGHLIGHT END ---
-
-    ref_full_pil = Image.fromarray(ref_rgb).resize((IMAGE_SIZE, IMAGE_SIZE))
-    ref_full_tensor = get_tensor()(ref_full_pil).unsqueeze(0).to(device)
-    ref_mask_pil = Image.fromarray((ref_mask.astype(np.uint8) * 255)).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
-    bg_tensor    = get_tensor()(ref_full_pil).unsqueeze(0).to(device)
-    mask_tensor  = T.ToTensor()(ref_mask_pil).unsqueeze(0).to(device)
-    mask_tensor  = (mask_tensor > 0.5).float()
-    inpaint_tensor = bg_tensor * (1 - mask_tensor)
-
-    # --- DEBUGGING OUTPUTS START ---
-    import torchvision.utils as vutils
-    os.makedirs("MoBI_outputs/debug", exist_ok=True)
-    
-    # Save the tensors to visually inspect what the model is actually receiving
-    def denorm(t):
-        return torch.clamp((t + 1.0) / 2.0, 0, 1)
-        
-    vutils.save_image(denorm(bg_tensor), "MoBI_outputs/debug/debug_01_bg_tensor.png")
-    vutils.save_image(mask_tensor, "MoBI_outputs/debug/debug_02_mask_tensor.png")
-    vutils.save_image(denorm(inpaint_tensor), "MoBI_outputs/debug/debug_03_inpaint_tensor.png")
-    
-    # Also save the original placement-based background and mask created earlier
-    # to compare against what actually ended up in inpaint_tensor
-    bg_pil.save("MoBI_outputs/debug/debug_04_original_bg_pil.png")
-    mask_pil.save("MoBI_outputs/debug/debug_05_original_mask_pil.png")
-    # --- DEBUGGING OUTPUTS END ---
-
-    # build batch
+    # build batch (removed the buggy overwrite block)
     batch = {
         "image": {
-            "GT":            ref_full_tensor,
+            "GT":            bg_tensor,
             "inpaint_image": inpaint_tensor,
             "inpaint_mask":  mask_tensor,
             "cond": {
@@ -270,36 +182,15 @@ def main():
 
     # paste result back into original background at placement zone
     result_np   = (x_samples[0].cpu().permute(1,2,0).numpy() * 255).astype(np.uint8)
-    result_full = np.array(Image.fromarray(result_np).resize((ref_W, ref_H)))
+    result_full = cv2.resize(result_np, (W, H))
     
-    # --- VISUAL DEBUGGING: WHAT IS BEING PASTED ---
-    cv2.imwrite("MoBI_outputs/debug/debug_06_raw_model_output.png", cv2.cvtColor(result_np, cv2.COLOR_RGB2BGR))
-    cv2.imwrite("MoBI_outputs/debug/debug_07_upscaled_model_output.png", cv2.cvtColor(result_full, cv2.COLOR_RGB2BGR))
-    # ----------------------------------------------
-    
-    output_bg   = bg_rgb.copy()
-    ladder_region = result_full[ref_mask]
-    ys_place = np.linspace(y1, y2-1, ladder_region.shape[0]).astype(int)
+    output_bg = bg_rgb.copy()
+    placed_mask_bool = ref_mask_placed.astype(bool)
+    output_bg[placed_mask_bool] = result_full[placed_mask_bool]
 
-    # --- DEBUGGING: ACTUALLY PASTE THE PIXELS ---
-    # The original code calculated the region but never mapped it onto output_bg
-    # We will resize the 2D output image to the bounding box to see it in context.
-    
-    placed_result = cv2.resize(result_full, (x2 - x1, y2 - y1))
-    placed_mask = cv2.resize(ref_mask.astype(np.uint8), (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST).astype(bool)
-    
-    # Only paste where the newly resized mask is True
-    placement_zone = output_bg[y1:y2, x1:x2]
-    placement_zone[placed_mask] = placed_result[placed_mask]
-    output_bg[y1:y2, x1:x2] = placement_zone
-    # --------------------------------------------
-
-    # --- DEBUGGING OUTPUT FIX START ---
-    # The result was being calculated but never saved!
     output_bgr = cv2.cvtColor(output_bg, cv2.COLOR_RGB2BGR)
     cv2.imwrite(OUTPUT_PATH, output_bgr)
-    print(f"[DEBUG] Final image saved to {OUTPUT_PATH}")
-    # --- DEBUGGING OUTPUT FIX END ---
+    print(f"Final image saved to {OUTPUT_PATH}")
 
 if __name__ == "__main__":
     main()
