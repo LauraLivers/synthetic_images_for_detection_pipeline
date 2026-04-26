@@ -235,6 +235,19 @@ def main():
     ladder_region = result_full[ref_mask]
     ys_place = np.linspace(y1, y2-1, ladder_region.shape[0]).astype(int)
 
+    # --- DEBUGGING: ACTUALLY PASTE THE PIXELS ---
+    # The original code calculated the region but never mapped it onto output_bg
+    # We map the horizontal coordinates to fit in [x1, x2] and vertical to ys_place
+    xs_place = np.linspace(x1, x2-1, ladder_region.shape[0]).astype(int)
+    
+    # Simple paste for visual debugging (ignores complex aspect ratio handling to just put the pixels there)
+    for i in range(len(ladder_region)):
+        y_p = ys_place[i]
+        x_p = xs_place[i]
+        if 0 <= y_p < H and 0 <= x_p < W:
+            output_bg[y_p, x_p] = ladder_region[i]
+    # --------------------------------------------
+
     # --- DEBUGGING OUTPUT FIX START ---
     # The result was being calculated but never saved!
     output_bgr = cv2.cvtColor(output_bg, cv2.COLOR_RGB2BGR)
