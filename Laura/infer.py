@@ -128,7 +128,9 @@ def main():
     mask_pil    = Image.fromarray(ref_mask_placed * 255).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
     bg_tensor   = get_tensor()(bg_pil).unsqueeze(0).to(device)
     mask_tensor = T.ToTensor()(mask_pil).unsqueeze(0).to(device)
-    mask_tensor = (mask_tensor > 0.5).float()
+    
+    # Invert the mask polarity: flip the > to < so the model masks the correct region
+    mask_tensor = (mask_tensor < 0.5).float()
     inpaint_tensor = bg_tensor * (1 - mask_tensor)
 
     # bbox coords from corners3d
