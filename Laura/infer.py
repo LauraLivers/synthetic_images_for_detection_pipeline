@@ -117,11 +117,27 @@ def main():
     tight_x1, tight_x2 = xs.min(), xs.max() + 1
     ref_mask_tight = ref_mask[tight_y1:tight_y2, tight_x1:tight_x2]
 
-    # build inpaint inputs using background and tight mask
-    ref_mask_placed = np.zeros((H, W), dtype=np.uint8)
-    ref_mask_placed[y1:y2, x1:x2] = cv2.resize(ref_mask_tight.astype(np.uint8), (x2-x1, y2-y1), interpolation=cv2.INTER_NEAREST)
+    # --- LOCALIZED CROP LOGIC ---
+    # Define a square local crop around the placement zone so we don't squish the whole room into 512x512
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    box_size = max(x2 - x1, y2 - y1) + 200  # Add structural context around the ladder
+    half_size = box_size // 2
+
+    crop_y1, crop_y2 = max(0, cy - half_size), min(H, cy + half_size)
+    crop_x1, crop_x2 = max(0, cx - half_size), min(W, cx + half_size)
     
-    bg_pil      = Image.fromarray(bg_rgb).resize((IMAGE_SIZE, IMAGE_SIZE))
+    # Local coordinates of the placement zone within the crop
+    loc_x1, loc_x2 = x1 - crop_x1, x2 - crop_x1
+    loc_y1, loc_y2 = y1 - crop_y1, y2 - crop_y1
+
+    bg_crop = bg_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+    crop_H, crop_W = bg_crop.shape[:2]
+
+    # build inpaint inputs using locally cropped background and tight mask
+    ref_mask_placed = np.zeros((crop_H, crop_W), dtype=np.uint8)
+    ref_mask_placed[loc_y1:loc_y2, loc_x1:loc_x2] = cv2.resize(ref_mask_tight.astype(np.uint8), (loc_x2-loc_x1, loc_y2-loc_y1), interpolation=cv2.INTER_NEAREST)
+    
+    bg_pil      = Image.fromarray(bg_crop).resize((IMAGE_SIZE, IMAGE_SIZE))
     mask_pil    = Image.fromarray(ref_mask_placed * 255).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
     bg_tensor   = get_tensor()(bg_pil).unsqueeze(0).to(device)
     mask_tensor = T.ToTensor()(mask_pil).unsqueeze(0).to(device)
@@ -129,30 +145,20 @@ def main():
     # Restore standard mask polarity: 1.0 = "missing area to generate", 0.0 = "known context to keep"
     mask_tensor = (mask_tensor > 0.5).float()
     
-    # [DEBUG HYPOTHESIS TEST: GHOSTING]
-    # Instead of a pure grey hole, we paste the actual resized reference ladder into the mask hole, 
-    # but faded/noisy. If it generates a perfect ladder now, it proves the model 
-    # learned to "enhance/reconstruct" existing pixels instead of generating from scratch.
-    
-    # 1. Take the exact tight crop of the original RGB image to match the tight mask
+    # Paste the actual resized reference ladder into the mask hole
     tight_rgb = ref_rgb[tight_y1:tight_y2, tight_x1:tight_x2]
+    ladder_ghost = cv2.resize(tight_rgb, (loc_x2-loc_x1, loc_y2-loc_y1))
+    mask_patch = ref_mask_placed[loc_y1:loc_y2, loc_x1:loc_x2].astype(bool)
     
-    # 2. Resize it exactly to the placement box
-    ladder_ghost = cv2.resize(tight_rgb, (x2-x1, y2-y1))
-    
-    # 3. Get the exactly-sized boolean mask patch we calculated earlier
-    mask_patch = ref_mask_placed[y1:y2, x1:x2].astype(bool)
-    
-    # 4. Paste only the masked ladder pixels into the background
-    ghost_bg = bg_rgb.copy()
-    roi = ghost_bg[y1:y2, x1:x2]
+    ghost_bg = bg_crop.copy()
+    roi = ghost_bg[loc_y1:loc_y2, loc_x1:loc_x2]
     roi[mask_patch] = ladder_ghost[mask_patch]
-    ghost_bg[y1:y2, x1:x2] = roi
+    ghost_bg[loc_y1:loc_y2, loc_x1:loc_x2] = roi
 
     ghost_pil = Image.fromarray(ghost_bg).resize((IMAGE_SIZE, IMAGE_SIZE))
     ghost_tensor = get_tensor()(ghost_pil).unsqueeze(0).to(device)
     
-    # Use the ghosted background specifically inside the hole
+    # Use the pasted ladder specifically inside the hole
     inpaint_tensor = bg_tensor * (1 - mask_tensor) + ghost_tensor * mask_tensor
 
     # bbox coords from corners3d
@@ -211,11 +217,17 @@ def main():
 
     # paste result back into original background at placement zone
     result_np   = (x_samples[0].cpu().permute(1,2,0).numpy() * 255).astype(np.uint8)
-    result_full = cv2.resize(result_np, (W, H))
+    
+    # Resize the model output back to the local crop size, NOT the full background size
+    result_crop = cv2.resize(result_np, (crop_W, crop_H))
     
     output_bg = bg_rgb.copy()
     placed_mask_bool = ref_mask_placed.astype(bool)
-    output_bg[placed_mask_bool] = result_full[placed_mask_bool]
+    
+    # Paste into the cropped region of the final image
+    target_roi = output_bg[crop_y1:crop_y2, crop_x1:crop_x2]
+    target_roi[placed_mask_bool] = result_crop[placed_mask_bool]
+    output_bg[crop_y1:crop_y2, crop_x1:crop_x2] = target_roi
 
     output_bgr = cv2.cvtColor(output_bg, cv2.COLOR_RGB2BGR)
     cv2.imwrite(OUTPUT_PATH, output_bgr)
