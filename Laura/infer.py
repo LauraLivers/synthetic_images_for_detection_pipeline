@@ -118,6 +118,19 @@ def main():
     pad      = 10
     ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
     
+    # --- VISUAL DEBUGGING: TIGHT MASK VS FULL IMAGE FORMAT ---
+    # This will prove if resizing the full image into the placement box 
+    # compresses the ladder because of excessive empty padding in the reference image.
+    mask_bbox_vis = ref_bgr.copy()
+    tight_x1, tight_y1 = xs.min(), ys.min()
+    tight_x2, tight_y2 = xs.max(), ys.max()
+    # Draw tight bounding box around just the ladder in MAGENTA
+    cv2.rectangle(mask_bbox_vis, (tight_x1, tight_y1), (tight_x2, tight_y2), (255, 0, 255), 4)
+    # Draw border representing the full reference image size in YELLOW
+    cv2.rectangle(mask_bbox_vis, (0, 0), (ref_W-1, ref_H-1), (0, 255, 255), 6)
+    cv2.imwrite("MoBI_outputs/debug/debug_00e_mask_tight_vs_full.png", mask_bbox_vis)
+    # ---------------------------------------------------------
+
     # --- VISUAL DEBUGGING: SCALE CLASH PROOF ---
     # Paste the RAW, unscaled reference crop onto the background to visually compare
     # the original pixel size vs the tiny placement bounding box.
