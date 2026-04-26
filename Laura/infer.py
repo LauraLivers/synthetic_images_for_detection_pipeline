@@ -105,7 +105,12 @@ def main():
     ref_mask = np.load(ref_row["mask_path"]).astype(bool)
     ys, xs   = np.where(ref_mask)
     pad      = 10
-    ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
+    
+    # Mask out the ladder surroundings (black background) so the model only sees the ladder
+    ref_masked_rgb = ref_rgb.copy()
+    ref_masked_rgb[~ref_mask] = 0
+    
+    ref_crop = ref_masked_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
     
     ref_pil  = Image.fromarray(ref_crop).resize((224, 224))
     ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
