@@ -133,9 +133,22 @@ def main():
     # Instead of a pure grey hole, we paste the actual resized reference ladder into the mask hole, 
     # but faded/noisy. If it generates a perfect ladder now, it proves the model 
     # learned to "enhance/reconstruct" existing pixels instead of generating from scratch.
-    ladder_ghost = cv2.resize(ref_crop, (x2-x1, y2-y1))
+    
+    # 1. Take the exact tight crop of the original RGB image to match the tight mask
+    tight_rgb = ref_rgb[tight_y1:tight_y2, tight_x1:tight_x2]
+    
+    # 2. Resize it exactly to the placement box
+    ladder_ghost = cv2.resize(tight_rgb, (x2-x1, y2-y1))
+    
+    # 3. Get the exactly-sized boolean mask patch we calculated earlier
+    mask_patch = ref_mask_placed[y1:y2, x1:x2].astype(bool)
+    
+    # 4. Paste only the masked ladder pixels into the background
     ghost_bg = bg_rgb.copy()
-    ghost_bg[y1:y2, x1:x2][ref_mask_tight.astype(bool)] = ladder_ghost[ref_mask_tight.astype(bool)]
+    roi = ghost_bg[y1:y2, x1:x2]
+    roi[mask_patch] = ladder_ghost[mask_patch]
+    ghost_bg[y1:y2, x1:x2] = roi
+
     ghost_pil = Image.fromarray(ghost_bg).resize((IMAGE_SIZE, IMAGE_SIZE))
     ghost_tensor = get_tensor()(ghost_pil).unsqueeze(0).to(device)
     
