@@ -93,11 +93,23 @@ def main():
     placement = load_placement(PLACEMENTS_CSV, BACKGROUND_IMG)
     x1, y1, x2, y2 = int(placement.x1), int(placement.y1), int(placement.x2), int(placement.y2)
     print(f"Placement zone: ({x1},{y1}) -> ({x2},{y2})")
+    
+    # --- VISUAL DEBUGGING: PLACEMENT ZONE ---
+    os.makedirs("MoBI_outputs/debug", exist_ok=True)
+    bg_debug = bg_bgr.copy()
+    cv2.rectangle(bg_debug, (x1, y1), (x2, y2), (0, 255, 0), 3)
+    cv2.imwrite("MoBI_outputs/debug/debug_00a_placement_on_bg.png", bg_debug)
+    # ----------------------------------------
 
     # load reference ladder image, mask, crop
     ref_bgr = cv2.imread(REFERENCE_IMG)
     ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
     ref_H, ref_W = ref_rgb.shape[:2]
+    
+    # --- VISUAL DEBUGGING: REFERENCE LADDER CROP ---
+    cv2.imwrite("MoBI_outputs/debug/debug_00b_reference_raw.png", ref_bgr)
+    # -----------------------------------------------
+
     instances = pd.read_csv(LADDER_INSTANCES_CSV, index_col=0)
     ref_row  = instances[instances["image_path"] == REFERENCE_IMG].iloc[0]
     ref_mask = np.load(ref_row["mask_path"]).astype(bool)
@@ -129,6 +141,19 @@ def main():
     corners2d[:, 1] = np.clip(corners2d[:, 1] / ref_H, 0, 1)
     corners2d[:, 2] = np.clip(corners2d[:, 2] / 25.0 - 1.0, -1, 1)
     bbox_coords = torch.tensor(corners2d, dtype=torch.float32).unsqueeze(0).to(device)
+
+    # --- VISUAL DEBUGGING: 3D TO 2D CORNERS ON REFERENCE ---
+    ref_bbox_debug = ref_bgr.copy()
+    for (px, py, pz) in corners2d:
+        cx, cy = int(px * ref_W), int(py * ref_H)
+        cv2.circle(ref_bbox_debug, (cx, cy), 5, (0, 0, 255), -1)
+    cv2.imwrite("MoBI_outputs/debug/debug_00c_projected_corners.png", ref_bbox_debug)
+    # -------------------------------------------------------
+
+    # --- DEBUGGING HIGHLIGHT START ---
+    print("[DEBUG] OVERWRITE WARNING: bg_tensor, mask_tensor, and inpaint_tensor are being reassigned here")
+    print("[DEBUG] They previously held the empty background image but are now being replaced by the reference ladder image.")
+    # --- DEBUGGING HIGHLIGHT END ---
 
     ref_full_pil = Image.fromarray(ref_rgb).resize((IMAGE_SIZE, IMAGE_SIZE))
     ref_full_tensor = get_tensor()(ref_full_pil).unsqueeze(0).to(device)
@@ -200,9 +225,22 @@ def main():
     # paste result back into original background at placement zone
     result_np   = (x_samples[0].cpu().permute(1,2,0).numpy() * 255).astype(np.uint8)
     result_full = np.array(Image.fromarray(result_np).resize((ref_W, ref_H)))
+    
+    # --- VISUAL DEBUGGING: WHAT IS BEING PASTED ---
+    cv2.imwrite("MoBI_outputs/debug/debug_06_raw_model_output.png", cv2.cvtColor(result_np, cv2.COLOR_RGB2BGR))
+    cv2.imwrite("MoBI_outputs/debug/debug_07_upscaled_model_output.png", cv2.cvtColor(result_full, cv2.COLOR_RGB2BGR))
+    # ----------------------------------------------
+    
     output_bg   = bg_rgb.copy()
     ladder_region = result_full[ref_mask]
     ys_place = np.linspace(y1, y2-1, ladder_region.shape[0]).astype(int)
+
+    # --- DEBUGGING OUTPUT FIX START ---
+    # The result was being calculated but never saved!
+    output_bgr = cv2.cvtColor(output_bg, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(OUTPUT_PATH, output_bgr)
+    print(f"[DEBUG] Final image saved to {OUTPUT_PATH}")
+    # --- DEBUGGING OUTPUT FIX END ---
 
 if __name__ == "__main__":
     main()
