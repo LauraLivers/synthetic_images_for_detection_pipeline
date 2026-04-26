@@ -112,10 +112,32 @@ def main():
 
     instances = pd.read_csv(LADDER_INSTANCES_CSV, index_col=0)
     ref_row  = instances[instances["image_path"] == REFERENCE_IMG].iloc[0]
+    
     ref_mask = np.load(ref_row["mask_path"]).astype(bool)
     ys, xs   = np.where(ref_mask)
     pad      = 10
     ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
+    
+    # --- VISUAL DEBUGGING: SCALE CLASH PROOF ---
+    # Paste the RAW, unscaled reference crop onto the background to visually compare
+    # the original pixel size vs the tiny placement bounding box.
+    scale_clash_vis = bg_bgr.copy()
+    c_h, c_w = ref_crop.shape[:2]
+    # Try to safely paste it near the placement zone for comparison
+    paste_y2 = min(H, y1 + c_h)
+    paste_x2 = min(W, x1 + c_w)
+    actual_h = paste_y2 - y1
+    actual_w = paste_x2 - x1
+    
+    if actual_h > 0 and actual_w > 0:
+        scale_clash_vis[y1:paste_y2, x1:paste_x2] = cv2.cvtColor(ref_crop[:actual_h, :actual_w], cv2.COLOR_RGB2BGR)
+        # Draw the target placement zone in RED (what it shrinks down to)
+        cv2.rectangle(scale_clash_vis, (x1, y1), (x2, y2), (0, 0, 255), 4)
+        # Draw the original ladder's actual footprint in BLUE (what it starts as)
+        cv2.rectangle(scale_clash_vis, (x1, y1), (paste_x2, paste_y2), (255, 0, 0), 4)
+    cv2.imwrite("MoBI_outputs/debug/debug_00d_scale_clash_comparison.png", scale_clash_vis)
+    # -------------------------------------------
+
     ref_pil  = Image.fromarray(ref_crop).resize((224, 224))
     ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
 
