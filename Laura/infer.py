@@ -106,11 +106,8 @@ def main():
     ys, xs   = np.where(ref_mask)
     pad      = 10
     
-    # Mask out the ladder surroundings (black background) so the model only sees the ladder
-    ref_masked_rgb = ref_rgb.copy()
-    ref_masked_rgb[~ref_mask] = 0
-    
-    ref_crop = ref_masked_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
+    # Use the natural cropped reference image (Paint-by-Example CLIP embeddings break if given pure black backgrounds)
+    ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
     
     ref_pil  = Image.fromarray(ref_crop).resize((224, 224))
     ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
@@ -129,9 +126,21 @@ def main():
     bg_tensor   = get_tensor()(bg_pil).unsqueeze(0).to(device)
     mask_tensor = T.ToTensor()(mask_pil).unsqueeze(0).to(device)
     
-    # Invert the mask polarity: flip the > to < so the model masks the correct region
-    mask_tensor = (mask_tensor < 0.5).float()
-    inpaint_tensor = bg_tensor * (1 - mask_tensor)
+    # Restore standard mask polarity: 1.0 = "missing area to generate", 0.0 = "known context to keep"
+    mask_tensor = (mask_tensor > 0.5).float()
+    
+    # [DEBUG HYPOTHESIS TEST: GHOSTING]
+    # Instead of a pure grey hole, we paste the actual resized reference ladder into the mask hole, 
+    # but faded/noisy. If it generates a perfect ladder now, it proves the model 
+    # learned to "enhance/reconstruct" existing pixels instead of generating from scratch.
+    ladder_ghost = cv2.resize(ref_crop, (x2-x1, y2-y1))
+    ghost_bg = bg_rgb.copy()
+    ghost_bg[y1:y2, x1:x2][ref_mask_tight.astype(bool)] = ladder_ghost[ref_mask_tight.astype(bool)]
+    ghost_pil = Image.fromarray(ghost_bg).resize((IMAGE_SIZE, IMAGE_SIZE))
+    ghost_tensor = get_tensor()(ghost_pil).unsqueeze(0).to(device)
+    
+    # Use the ghosted background specifically inside the hole
+    inpaint_tensor = bg_tensor * (1 - mask_tensor) + ghost_tensor * mask_tensor
 
     # bbox coords from corners3d
     corners3d = np.load(ref_row["corners3d_path"])
