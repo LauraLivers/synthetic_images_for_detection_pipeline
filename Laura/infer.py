@@ -138,6 +138,24 @@ def main():
     mask_tensor  = (mask_tensor > 0.5).float()
     inpaint_tensor = bg_tensor * (1 - mask_tensor)
 
+    # --- DEBUGGING OUTPUTS START ---
+    import torchvision.utils as vutils
+    os.makedirs("MoBI_outputs/debug", exist_ok=True)
+    
+    # Save the tensors to visually inspect what the model is actually receiving
+    def denorm(t):
+        return torch.clamp((t + 1.0) / 2.0, 0, 1)
+        
+    vutils.save_image(denorm(bg_tensor), "MoBI_outputs/debug/debug_01_bg_tensor.png")
+    vutils.save_image(mask_tensor, "MoBI_outputs/debug/debug_02_mask_tensor.png")
+    vutils.save_image(denorm(inpaint_tensor), "MoBI_outputs/debug/debug_03_inpaint_tensor.png")
+    
+    # Also save the original placement-based background and mask created earlier
+    # to compare against what actually ended up in inpaint_tensor
+    bg_pil.save("MoBI_outputs/debug/debug_04_original_bg_pil.png")
+    mask_pil.save("MoBI_outputs/debug/debug_05_original_mask_pil.png")
+    # --- DEBUGGING OUTPUTS END ---
+
     # build batch
     batch = {
         "image": {
