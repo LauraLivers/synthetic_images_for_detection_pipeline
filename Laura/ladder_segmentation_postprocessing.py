@@ -125,7 +125,7 @@ def main():
         mask_th_default = (best_logits > 0.0).astype(np.uint8)
         mask_th_1       = (best_logits > 1.0).astype(np.uint8)
         mask_th_2       = (best_logits > 2.0).astype(np.uint8)
-        mask_th_3       = (best_logits > 4.0).astype(np.uint8)
+        mask_th_3       = (best_logits > 3.0).astype(np.uint8)
 
         # Focus Crop
         pad = 20
@@ -160,7 +160,7 @@ def main():
         axes[3].set_title("Very Strict (Logits > 2.0)", color="white", fontsize=10)
 
         axes[4].imshow(get_overlay(mask_th_3))
-        axes[4].set_title("Extreme (Logits > 4.0)", color="white", fontsize=10)
+        axes[4].set_title("Extreme (Logits > 3.0)", color="white", fontsize=10)
 
         for ax in axes:
             ax.axis("off")

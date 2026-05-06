@@ -84,17 +84,17 @@ def main():
     model = model.to(device).eval()
     print("Model loaded.")
 
-    # load background image
+    # background image
     bg_bgr = cv2.imread(BACKGROUND_IMG)
     bg_rgb = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2RGB)
     H, W = bg_rgb.shape[:2]
 
-    # load placement zone
+    # placement zone
     placement = load_placement(PLACEMENTS_CSV, BACKGROUND_IMG)
     x1, y1, x2, y2 = int(placement.x1), int(placement.y1), int(placement.x2), int(placement.y2)
     print(f"Placement zone: ({x1},{y1}) -> ({x2},{y2})")
 
-    # load reference ladder image, mask, crop
+    # reference ladder image, mask, crop
     ref_bgr = cv2.imread(REFERENCE_IMG)
     ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
     ref_H, ref_W = ref_rgb.shape[:2]
@@ -106,19 +106,19 @@ def main():
     ys, xs   = np.where(ref_mask)
     pad      = 10
     
-    # Use the natural cropped reference image (Paint-by-Example CLIP embeddings break if given pure black backgrounds)
+    # cropped reference image (Paint-by-Example CLIP embeddings break if given pure black backgrounds)
     ref_crop = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
     
     ref_pil  = Image.fromarray(ref_crop).resize((224, 224))
     ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
 
-    # get tight mask to fix scaling issue 
+    # tight mask for scaling issue 
     tight_y1, tight_y2 = ys.min(), ys.max() + 1
     tight_x1, tight_x2 = xs.min(), xs.max() + 1
     ref_mask_tight = ref_mask[tight_y1:tight_y2, tight_x1:tight_x2]
 
     # --- LOCALIZED CROP LOGIC ---
-    # Define a tight square local crop around the placement zone
+    # local crop around the placement zone
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
     box_size = max(x2 - x1, y2 - y1)  # Tightly fit the longest dimension, no extra padding
     half_size = box_size // 2
@@ -133,7 +133,7 @@ def main():
     bg_crop = bg_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
     crop_H, crop_W = bg_crop.shape[:2]
 
-    # build inpaint inputs using locally cropped background and tight mask
+    # inpaint inputs using locally cropped background and tight mask
     ref_mask_placed = np.zeros((crop_H, crop_W), dtype=np.uint8)
     ref_mask_placed[loc_y1:loc_y2, loc_x1:loc_x2] = cv2.resize(ref_mask_tight.astype(np.uint8), (loc_x2-loc_x1, loc_y2-loc_y1), interpolation=cv2.INTER_NEAREST)
     
@@ -158,7 +158,6 @@ def main():
     ghost_pil = Image.fromarray(ghost_bg).resize((IMAGE_SIZE, IMAGE_SIZE))
     ghost_tensor = get_tensor()(ghost_pil).unsqueeze(0).to(device)
     
-    # Use the pasted ladder specifically inside the hole
     inpaint_tensor = bg_tensor * (1 - mask_tensor) + ghost_tensor * mask_tensor
 
     # bbox coords from corners3d
@@ -217,14 +216,11 @@ def main():
 
     # paste result back into original background at placement zone
     result_np   = (x_samples[0].cpu().permute(1,2,0).numpy() * 255).astype(np.uint8)
-    
-    # Resize the model output back to the local crop size, NOT the full background size
     result_crop = cv2.resize(result_np, (crop_W, crop_H))
     
     output_bg = bg_rgb.copy()
     placed_mask_bool = ref_mask_placed.astype(bool)
     
-    # Paste into the cropped region of the final image
     target_roi = output_bg[crop_y1:crop_y2, crop_x1:crop_x2]
     target_roi[placed_mask_bool] = result_crop[placed_mask_bool]
     output_bg[crop_y1:crop_y2, crop_x1:crop_x2] = target_roi
