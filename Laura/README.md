@@ -133,7 +133,7 @@ uses Multimodel Diffusion Transformer $\rightarrow$ change entire architecture i
 
 if other things withing bounding box it can get tricky - logic should be rewritten...
 ![seg wrong](MoBI_outputs/ladder_segmentations/verification/3923cd8f90ca4c49ab0eb89f5d7428bf_left_5_March_2026_13-11_ladder00.jpg)
-### 2. identify surfaces for ladder to lean agains
+### 2. identify surfaces for ladder to lean against
 Depth Anything -  not implemented yet. comes with `run.py` as a template
 
 - SegFormer ADE20K
@@ -142,4 +142,49 @@ Depth Anything -  not implemented yet. comes with `run.py` as a template
 ![run test](MoBI_outputs/da_test/01ac6461e37f4ee1a2ada6d8ec472aec_front_5_March_2026_13-08.png)
 ![placement zones](MoBI_outputs/background2/verification/2b95fa3882b443218679c4d1241a7b16_back_5_March_2026_13-09.jpg)
 
+#### still error prone
+---
 ![placement zone error](MoBI_outputs/background3/verification/fa68e8ad6ef84a2bb52c9d1300c6becf_left_5_March_2026_13-06.jpg)
+
+1. only use reference objects on same or +-1 depth-bin from ladder 
+2. minimum pixel per reference objects to avoid false positives (segF is very trigger happy)
+![ladder height reference](MoBI_outputs/ladder_segmentations_real_size4_debug/verification/df5dd2fe764646dca5c315efe2045b69_front_5_March_2026_12-58_ladder00.jpg)
+**downside** less potential reference objects
+
+### 3. Inpainting - ladder into empty background (not implemented in OG repo)
+#### 1. original ladder
+---
+![ladder reference](img/01_ref_crop_debug.png)
+#### 2. wrong image, wrong ratio
+---
+![ladder inpainting wrong image wrong ratio](img/03_debug_06_raw_model_output(2).png)
+#### 3. wrong image, correct resizing 
+---
+![ladder inpainting wrong image correct ratio](img/04_debug_07_upscaled_model_output(2).png)
+#### 4. correct image, wrong size, mask only
+---
+![ladder inpainting correct image wrong size](img/05_inpainted_result_too_small.png)
+#### 5. correct image, correct size, mask only
+---
+![ladder inpainting correct image right size mask only](img/07_inpainted_result_real_size.png)
+#### 6. correct image, correct size, wrong reference for colours?
+---
+![ladder inpainting transparent](img/08_inpainted_result_transparent.png)
+#### 7. correct image, correct size, wrong resolution
+---
+![ladder inpainting ladder wrong resolution](img/09_inpainted_result_resolution_off.png)
+#### 8. correct image, correct size, correct resolution
+---
+![ladder inpainting ladder correct resolution](img/10_inpainted_result_resolution_correct.png)
+
+### Mitigation
+#### noisy Segementation mask
+logits - threshhold + Errosion/Polygons
+![mm](MoBI_outputs/ladder_mask_postprocess_debug4_sam2_hierarchy/02e903d139804b5291b44f8aa5cf87b4_front_5_March_2026_12-58_ladder00_sam2_logits.jpg)
+
+#### Ladder Alignment with Background -> !!!!! Focus on this, other stuff can be future work !!!!!!!
+use PCA-Orientation Information + Homography (bent bounding box) + Background Bounding Box (use point of intersection horizontal/vertical)
+
+#### Color Transfer
+Histogram Matching in Latent Space??
+
