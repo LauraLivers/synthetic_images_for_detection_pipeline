@@ -68,6 +68,43 @@ def build_mask(x1, y1, x2, y2, H, W):
     mask[y1:y2, x1:x2] = 1.0
     return mask
 
+def warp_to_slope(source_img, src_pca_pts, dst_x1, dst_y1, dst_x2, dst_y2_l, dst_y2_r, crop_W, crop_H, offset_px=(0, 0)):
+    """
+    Warp using the true oriented PCA corners of the ladder. 
+    The bottom edge of the PCA box aligns with the sloped ground line.
+    """
+    # Sort PCA points by Y to find the "bottom" edge of the ladder
+    sorted_by_y = src_pca_pts[src_pca_pts[:, 1].argsort()]
+    top_pts = sorted_by_y[:2]
+    bottom_pts = sorted_by_y[2:]
+    
+    # Sort X to get Top-Left, Top-Right, Bottom-Left, Bottom-Right
+    tl = top_pts[top_pts[:, 0].argsort()][0]
+    tr = top_pts[top_pts[:, 0].argsort()][1]
+    bl = bottom_pts[bottom_pts[:, 0].argsort()][0]
+    br = bottom_pts[bottom_pts[:, 0].argsort()][1]
+    
+    src_pts = np.array([tl, tr, bl, br], dtype=np.float32)
+    
+    # The destination points: bottom edge locks to the ground slope (y2_l to y2_r)
+    # Applying a slight parallel offset if needed (e.g. sinking slightly into the ground)
+    ox, oy = offset_px
+    dst_pts = np.array([
+        [dst_x1 + ox, dst_y1 + oy],
+        [dst_x2 + ox, dst_y1 + oy],
+        [dst_x1 + ox, dst_y2_l + oy],
+        [dst_x2 + ox, dst_y2_r + oy]
+    ], dtype=np.float32)
+
+    M, _ = cv2.findHomography(src_pts, dst_pts)
+    if M is None:  # Fallback to affine if homography fails
+        M = cv2.getAffineTransform(src_pts[:3].astype(np.float32), dst_pts[:3].astype(np.float32))
+        warped = cv2.warpAffine(source_img, M, (crop_W, crop_H), flags=cv2.INTER_LINEAR)
+    else:
+        warped = cv2.warpPerspective(source_img, M, (crop_W, crop_H), flags=cv2.INTER_LINEAR)
+    
+    return warped
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -89,10 +126,13 @@ def main():
     bg_rgb = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2RGB)
     H, W = bg_rgb.shape[:2]
 
-    # placement zone
+    # placement zone (Now pulling the true sloped floor bounds)
     placement = load_placement(PLACEMENTS_CSV, BACKGROUND_IMG)
-    x1, y1, x2, y2 = int(placement.x1), int(placement.y1), int(placement.x2), int(placement.y2)
-    print(f"Placement zone: ({x1},{y1}) -> ({x2},{y2})")
+    x1, y1, x2 = int(placement.x1), int(placement.y1), int(placement.x2)
+    y2_l, y2_r = int(placement.y2_left), int(placement.y2_right)
+    # y2 is strictly only used for the overall bounding crop
+    y2 = max(y2_l, y2_r) 
+    print(f"Placement zone: X:({x1}->{x2}), Y_Top:{y1}, Y_Bottom_Slope:({y2_l}->{y2_r})")
 
     # reference ladder image, mask, crop
     ref_bgr = cv2.imread(REFERENCE_IMG)
@@ -120,22 +160,48 @@ def main():
     # --- LOCALIZED CROP LOGIC ---
     # local crop around the placement zone
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    box_size = max(x2 - x1, y2 - y1)  # Tightly fit the longest dimension, no extra padding
+    box_size = max(x2 - x1, y2 - y1)  # Tightly fit the longest dimension, no padding
     half_size = box_size // 2
 
     crop_y1, crop_y2 = max(0, cy - half_size), min(H, cy + half_size)
     crop_x1, crop_x2 = max(0, cx - half_size), min(W, cx + half_size)
     
+    # --- EXTRACT REFERENCE PCA 2D CORNERS ---
+    corners3d = np.load(ref_row["corners3d_path"])
+    # Front face of the PCA box (first 4 points)
+    K = np.array([[ref_W * 0.8, 0, ref_W / 2.0], [0, ref_H * 0.8, ref_H / 2.0], [0, 0, 1.0]])
+    front_face_2d = []
+    for X, Y, Z in corners3d[:4]:
+        Z = max(Z, 0.1)
+        u = K[0,0] * X / Z + K[0,2]
+        v = K[1,1] * Y / Z + K[1,2]
+        front_face_2d.append([u, v])
+    front_face_2d = np.array(front_face_2d, dtype=np.float32)
+    
+    # Adjust PCA points to be relative to the tight reference crop we took
+    front_face_crop = front_face_2d - np.array([max(0, xs.min()-pad), max(0, ys.min()-pad)])
+
     # Local coordinates of the placement zone within the crop
     loc_x1, loc_x2 = x1 - crop_x1, x2 - crop_x1
-    loc_y1, loc_y2 = y1 - crop_y1, y2 - crop_y1
+    loc_y1 = y1 - crop_y1
+    loc_y2_l = y2_l - crop_y1
+    loc_y2_r = y2_r - crop_y1  
 
+    # Define crop BEFORE using it
     bg_crop = bg_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
     crop_H, crop_W = bg_crop.shape[:2]
 
     # inpaint inputs using locally cropped background and tight mask
-    ref_mask_placed = np.zeros((crop_H, crop_W), dtype=np.uint8)
-    ref_mask_placed[loc_y1:loc_y2, loc_x1:loc_x2] = cv2.resize(ref_mask_tight.astype(np.uint8), (loc_x2-loc_x1, loc_y2-loc_y1), interpolation=cv2.INTER_NEAREST)
+    # We now WARP using the PCA box instead of treating the ladder like a generic box
+    # Correct offset: shift PCA points to match the 'tight_rgb' slice [tight_x1, tight_y1]
+    front_face_tight = front_face_2d - np.array([tight_x1, tight_y1])
+    
+    ref_mask_placed = warp_to_slope(
+        ref_mask_tight.astype(np.uint8), 
+        front_face_tight,
+        loc_x1, loc_y1, loc_x2, loc_y2_l, loc_y2_r, 
+        crop_W, crop_H, offset_px=(0, 5) # slight sink offset
+    )
     
     bg_pil      = Image.fromarray(bg_crop).resize((IMAGE_SIZE, IMAGE_SIZE))
     mask_pil    = Image.fromarray(ref_mask_placed * 255).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
@@ -145,15 +211,19 @@ def main():
     # Restore standard mask polarity: 1.0 = "missing area to generate", 0.0 = "known context to keep"
     mask_tensor = (mask_tensor > 0.5).float()
     
-    # Paste the actual resized reference ladder into the mask hole
+    # Paste the actual resized reference ladder into the mask hole (using warped homography)
     tight_rgb = ref_rgb[tight_y1:tight_y2, tight_x1:tight_x2]
-    ladder_ghost = cv2.resize(tight_rgb, (loc_x2-loc_x1, loc_y2-loc_y1))
-    mask_patch = ref_mask_placed[loc_y1:loc_y2, loc_x1:loc_x2].astype(bool)
+    ladder_ghost = warp_to_slope(
+        tight_rgb,
+        front_face_tight,
+        loc_x1, loc_y1, loc_x2, loc_y2_l, loc_y2_r,
+        crop_W, crop_H, offset_px=(0, 5)
+    )
+    
+    mask_patch = ref_mask_placed.astype(bool)
     
     ghost_bg = bg_crop.copy()
-    roi = ghost_bg[loc_y1:loc_y2, loc_x1:loc_x2]
-    roi[mask_patch] = ladder_ghost[mask_patch]
-    ghost_bg[loc_y1:loc_y2, loc_x1:loc_x2] = roi
+    ghost_bg[mask_patch] = ladder_ghost[mask_patch]
 
     ghost_pil = Image.fromarray(ghost_bg).resize((IMAGE_SIZE, IMAGE_SIZE))
     ghost_tensor = get_tensor()(ghost_pil).unsqueeze(0).to(device)

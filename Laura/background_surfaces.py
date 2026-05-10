@@ -16,11 +16,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 BACKGROUNDS_DIR     = "./robo_images/no_ladder"
-OUTPUT_DIR          = "./MoBI_outputs/background8_segf_filter_small_kernel"
+OUTPUT_DIR          = "./MoBI_outputs/background9"
 DEPTH_ANYTHING_REPO = "./Depth-Anything-V2"
 DEPTH_CHECKPOINT    = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL     = "nvidia/segformer-b2-finetuned-ade-512-512"
-LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size3/ladder_instances.csv" # change after each run -.-
+LADDER_CSV          = "./MoBI_outputs/ladder_segmentations_real_size4_debug/ladder_instances.csv" # change after each run -.-
 PLACEMENTS_PER_IMAGE = 3
 MIN_REGION_AREA_FRAC = 0.02
 MAX_WALL_HEIGHT_FRAC = 0.75 # bottom N% of the image to be reachable from ground
@@ -157,66 +157,57 @@ def physical_length_to_pixels(physical_length_m, seg_map, depth_map, zone_depth_
 
  
 def find_placement_zone(wall_region, ground_mask, depth_map, scaled_h, scaled_w, img_h, img_w, rng):
-    """ box fits within the wall region + bottom is securely snapped to the oriented ground slope """
     wall_ys, wall_xs = np.where(wall_region > 0)
     if len(wall_xs) == 0:
         return None
- 
+
     candidates = []
     for _ in range(500):
         idx = rng.integers(0, len(wall_xs))
         cx  = int(wall_xs[idx])
- 
+
         x1 = max(0, cx - scaled_w // 2)
         x2 = min(img_w - 1, x1 + scaled_w)
- 
-        # Find the ground line explicitly across the width of the bounding box
-        search_roi = ground_mask[:, x1:x2]
+
+        search_roi    = ground_mask[:, x1:x2]
         ground_top_ys = np.argmax(search_roi > 0, axis=0)
-        
-        # Filter out columns where no ground was found (argmax returns 0 if all are 0)
-        valid_cols = (search_roi[ground_top_ys, np.arange(x2-x1)] > 0)
-        if valid_cols.sum() < (scaled_w * 0.5):  # Need ground under at least half the object
+        valid_cols    = (search_roi[ground_top_ys, np.arange(x2 - x1)] > 0)
+        if valid_cols.sum() < (scaled_w * 0.5):
             continue
-            
-        # Compute ground slope using a line fit through the valid ground boundary points
+
         xs_valid = np.arange(x1, x2)[valid_cols]
-        ys_valid = ground_top_ys[valid_cols]
-        slope, intercept = np.polyfit(xs_valid, ys_valid, 1)
-        
-        # Calculate sloped y2 corner anchors (sunken 10px into the ground)
-        y2_left_raw = int(slope * x1 + intercept) + 10
-        y2_right_raw = int(slope * x2 + intercept) + 10
-        
-        y2_left = np.clip(y2_left_raw, 0, img_h - 1)
-        y2_right = np.clip(y2_right_raw, 0, img_h - 1)
-        
-        # Use the highest point of the sloped bottom to define the top of the box
-        y2_min = min(y2_left, y2_right)
-        y1 = max(0, y2_min - scaled_h)
- 
+        ys_valid = ground_top_ys[valid_cols] + 10  # sink 10px into ground
+
+        # Interpolate actual curve — no line fitting
+        all_cols       = np.arange(x1, x2)
+        ground_ys_full = np.clip(
+            np.interp(all_cols, xs_valid, ys_valid).astype(int), 0, img_h - 1
+        )
+
+        y2_left  = int(ground_ys_full[0])
+        y2_right = int(ground_ys_full[-1])
+        y2_min   = int(ground_ys_full.min())
+        y2_max   = int(ground_ys_full.max())
+        y1       = max(0, y2_min - scaled_h)
+
         if (x2 - x1) < scaled_w * 0.5 or (y2_min - y1) < scaled_h * 0.5:
             continue
- 
-        # Box must mostly overlap wall region
-        # Use a simple bounding rect for the overlap check
-        y2_max = max(y2_left, y2_right)
+
         if wall_region[y1:y2_max, x1:x2].mean() < 0.4:
             continue
- 
+
         box_depth  = depth_map[y1:y2_max, x1:x2]
         depth_std  = float(box_depth.std())
         depth_mean = float(box_depth.mean())
-        
-        # Store left/right anchors instead of a flat y2
-        candidates.append((depth_std, x1, y1, x2, y2_left, y2_right, depth_mean))
- 
+
+        candidates.append((depth_std, x1, y1, x2, y2_left, y2_right, depth_mean, all_cols, ground_ys_full))
+
     if not candidates:
         return None
- 
+
     candidates.sort(key=lambda c: c[0])
-    _, x1, y1, x2, y2_l, y2_r, depth_mean = candidates[0]
-    return x1, y1, x2, y2_l, y2_r, depth_mean
+    _, x1, y1, x2, y2_l, y2_r, depth_mean, ground_xs, ground_ys = candidates[0]
+    return x1, y1, x2, y2_l, y2_r, depth_mean, ground_xs, ground_ys
  
  
 def colorize_seg_map(seg_map):
@@ -390,18 +381,23 @@ def main():
                 )
                 if result is None:
                     continue
-    
-                x1, y1, x2, y2_left, y2_right, depth_mean = result
-                # Just store max y2 for simple crop boundaries in downstream scripts,
-                # but keep the precise anchors if you want to apply shearing/warping later.
+
+                x1, y1, x2, y2_left, y2_right, depth_mean, ground_xs, ground_ys = result
                 y2 = max(y2_left, y2_right)
-                placements.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "y2_left": y2_left, "y2_right": y2_right, "box_h" : box_h})
+                placements.append({
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "y2_left": y2_left, "y2_right": y2_right,
+                    "ground_xs": ground_xs, "ground_ys": ground_ys,
+                    "box_h": box_h
+                })
                 records.append({
                     "background_image":  str(img_path),
                     "background_name":   image_name,
                     "placement_idx":     placement_idx,
                     "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                    "y2_left": y2_left, "y2_right": y2_right,
+                    "y2_left":           y2_left,
+                    "y2_right":          y2_right,
+                    "ground_boundary":   ";".join(f"{x},{y}" for x, y in zip(ground_xs, ground_ys)),
                     "zone_depth_mean":   round(depth_mean, 4),
                     "zone_w":            x2 - x1,
                     "zone_h":            y2 - y1,

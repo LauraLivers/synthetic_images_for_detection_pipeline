@@ -401,12 +401,12 @@ def main():
         boxes = load_yolo_boxes(str(label_path), img_w, img_h)
         if not boxes:
             continue
-        
 
         depth_map = estimate_depth(depth_model, image_rgb)
-        seg_full = segment_image(seg_processor, seg_model, image_rgb, device)
-        seg_map = seg_full.argmax(axis=0)
+        seg_full  = segment_image(seg_processor, seg_model, image_rgb, device)
+        seg_map   = seg_full.argmax(axis=0)
         confidence = torch.softmax(torch.tensor(seg_full), dim=0).numpy().max(axis=0)
+
         for box_idx, box_xyxy in enumerate(boxes):
             instance_id = f"{image_name}_ladder{box_idx:02d}"
 
@@ -422,24 +422,53 @@ def main():
 
             save_verification_row(
                 image_rgb, mask, depth_map, corners_3d, box_xyxy, K,
-                instance_id, score, verify_dir / f"{instance_id}.jpg", 
+                instance_id, score, verify_dir / f"{instance_id}.jpg",
                 seg_map, physical_length_m, ref_details, seg_model.config.id2label, confidence
             )
 
             ys, xs = np.where(mask > 0)
+            pts = np.stack([xs, ys], axis=1).astype(np.float64)
+            center = pts.mean(axis=0)
+            _, eigvecs = np.linalg.eigh(np.cov((pts - center).T))
+            long_axis  = eigvecs[:, 1]
+            short_axis = eigvecs[:, 0]
+            proj_long  = (pts - center) @ long_axis
+            proj_short = (pts - center) @ short_axis
+
+            corners_2d = np.array([
+                center + long_axis * proj_long.min() + short_axis * proj_short.min(),
+                center + long_axis * proj_long.min() + short_axis * proj_short.max(),
+                center + long_axis * proj_long.max() + short_axis * proj_short.max(),
+                center + long_axis * proj_long.max() + short_axis * proj_short.min(),
+            ])
+
+            sorted_by_y = corners_2d[corners_2d[:, 1].argsort()]
+            top_two    = sorted_by_y[:2]
+            bottom_two = sorted_by_y[2:]
+            tl = top_two[top_two[:, 0].argsort()][0]
+            tr = top_two[top_two[:, 0].argsort()][1]
+            bl = bottom_two[bottom_two[:, 0].argsort()][0]
+            br = bottom_two[bottom_two[:, 0].argsort()][1]
+
             records.append({
-                "instance_id":      instance_id,
-                "image_path":       str(img_path),
-                "sam2_score":       round(score, 4),
-                "mask_h":           int(ys.max() - ys.min()),
-                "mask_w":           int(xs.max() - xs.min()),
-                "mask_pixel_count": int((mask > 0).sum()),
-                "depth_min":        round(float(depth_map[mask > 0].min()), 4),
-                "depth_max":        round(float(depth_map[mask > 0].max()), 4),
-                "depth_mean":       round(float(depth_map[mask > 0].mean()), 4),
-                "corners3d_path":   str(corners_dir / f"{instance_id}_corners3d.npy"),
-                "mask_path":        str(masks_dir   / f"{instance_id}_mask.npy"),
-                "physical_length_m" : physical_length_m
+                "instance_id":       instance_id,
+                "image_path":        str(img_path),
+                "sam2_score":        round(score, 4),
+                "mask_h":            int(ys.max() - ys.min()),
+                "mask_w":            int(xs.max() - xs.min()),
+                "mask_pixel_count":  int((mask > 0).sum()),
+                "depth_min":         round(float(depth_map[mask > 0].min()), 4),
+                "depth_max":         round(float(depth_map[mask > 0].max()), 4),
+                "depth_mean":        round(float(depth_map[mask > 0].mean()), 4),
+                "corners3d_path":    str(corners_dir / f"{instance_id}_corners3d.npy"),
+                "mask_path":         str(masks_dir   / f"{instance_id}_mask.npy"),
+                "physical_length_m": physical_length_m,
+                "x1":                int(tl[0]),
+                "y1":                int(tl[1]),
+                "x2":                int(tr[0]),
+                "y1_right":          int(tr[1]),
+                "y2_left":           int(bl[1]),
+                "y2_right":          int(br[1]),
             })
 
     if not records:
