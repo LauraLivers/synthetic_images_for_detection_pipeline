@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 IMAGES_DIR      = "./robo_images/ladder"
 LABELS_DIR      = "./robo_images/yolo_annotations/labels"
-OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size4_debug"
+OUTPUT_DIR      = "./MoBI_outputs/ladder_segmentations_real_size5"
 SAM2_REPO       = "./sam2"
 SAM2_CHECKPOINT = "./sam2/checkpoints/sam2.1_hiera_large.pt"
 SAM2_CONFIG     = "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -90,16 +90,29 @@ def load_sam2(checkpoint, config, device):
 
 
 def get_mask_from_box(predictor, image_rgb, box_xyxy):
-    """ construct ladder mask inside the bounding box to avoid having false positives """
+    """ construct ladder seg-mask inside the bounding box only (avoid having false positives) """
+    img_h, img_w = image_rgb.shape[:2]
     predictor.set_image(image_rgb)
-    masks, scores, _ = predictor.predict(
+    masks, scores, logits = predictor.predict(
         point_coords=None,
         point_labels=None,
         box=np.array(box_xyxy)[None, :],
         multimask_output=True,
+        return_logits=True
     )
+    
+    scores = np.squeeze(scores)
+    logits = np.squeeze(logits)
+    
     best = np.argmax(scores)
-    return masks[best].astype(np.uint8), float(scores[best])
+    best_logits = logits[best]
+    
+    if best_logits.shape != (img_h, img_w):
+        best_logits = cv2.resize(best_logits, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
+        
+    final_mask = (best_logits > 2.4).astype(np.uint8)
+    
+    return final_mask, float(scores[best])
 
 
 def load_depth_model(checkpoint, device):
@@ -166,6 +179,9 @@ def mask_to_3d_box(mask, depth_map, K):
             bin_depths.append(np.nan)
     bin_depths = np.array(bin_depths)
     valid = ~np.isnan(bin_depths)
+    
+    if not np.any(valid):
+        return None, None
  
     # Ladder thickness from depth std across short axis — ladders are thin
     short_depth_std = float(depth_map[mask > 0].std())
@@ -228,21 +244,22 @@ def estimate_physical_length_m(mask, depth_map, seg_map, confidence):
             continue
             
         disparity_correction = ref_disparity / ladder_disparity
-        est = (ladder_px_length / ref_px_height) * disparity_correction * ref_h_m
+        raw_est = (ladder_px_length / ref_px_height) * disparity_correction * ref_h_m
         
-        # Sanity check: keep only physically plausible ladder sizes (0.5m to 6.0m)
-        if 0.5 <= est <= 6.0:
-            estimates.append(est)
-            details.append({
-                "cls": cls,
-                "cx": float(cls_xs.mean()),
-                "cy": float(cls_ys.mean()),
-                "disp": ref_disparity,
-                "corr": disparity_correction,
-                "est": est,
-                "mask_ys": cls_ys,
-                "mask_xs": cls_xs
-            })
+        # Sanity check: cap to physically plausible ladder sizes (1.0m to 2.0m) instead of excluding
+        est = float(np.clip(raw_est, 1.0, 2.0))
+        
+        estimates.append(est)
+        details.append({
+            "cls": cls,
+            "cx": float(cls_xs.mean()),
+            "cy": float(cls_ys.mean()),
+            "disp": ref_disparity,
+            "corr": disparity_correction,
+            "est": est,
+            "mask_ys": cls_ys,
+            "mask_xs": cls_xs
+        })
     
     final_val = round(float(np.median(estimates)), 3) if estimates else None
     return final_val, details
@@ -253,7 +270,7 @@ def draw_3d_box(image_rgb, corners_3d, K):
     vis = image_rgb.copy()
     pts = []
     for X, Y, Z in corners_3d:
-        if Z <= 0:
+        if Z <= 0 or np.isnan(X) or np.isnan(Y) or np.isnan(Z):
             pts.append(None)
             continue
         pts.append((int(K[0,0]*X/Z + K[0,2]), int(K[1,1]*Y/Z + K[1,2])))
