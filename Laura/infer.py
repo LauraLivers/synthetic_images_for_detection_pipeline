@@ -76,7 +76,7 @@ def get_pca_corners(mask_tight):
     pts = np.stack([xs_t, ys_t], axis=1).astype(np.float64)
     center = pts.mean()
     pts_c = pts - center
-    _, eigvecs = np.linalg.eigh(np.conv(pts_c.T))
+    _, eigvecs = np.linalg.eigh(np.cov(pts_c.T))
     long_axis = eigvecs[:, 1]
     short_axis = eigvecs[:, 0]
     proj_long = pts_c @ long_axis
