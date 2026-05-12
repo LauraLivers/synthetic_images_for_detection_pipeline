@@ -31,11 +31,11 @@ for p in [MOBI_ROOT, MY_FOLDER, TAMING_ROOT]:
 
 BACKGROUND_IMG = "robo_images/no_ladder/005cc92de4794b4d9259d80c5812d72d_right_5_March_2026_13-00.jpg"
 REFERENCE_IMG  = "robo_images/ladder/02e903d139804b5291b44f8aa5cf87b4_front_5_March_2026_12-58.jpg"
-PLACEMENTS_CSV = "MoBI_outputs/background6_segf_filter/placements.csv"
+PLACEMENTS_CSV = "MoBI_outputs/background10_new/placements.csv"
 CHECKPOINT     = "../MoBI_outputs/mobi_inpaining1/2026-04-14T02-17-13_ladder_dataset_mobi/checkpoints/epoch=000005.ckpt"
 CONFIG_PATH    = "ladder_dataset_mobi.yaml"
 OUTPUT_PATH    = "MoBI_outputs/inpainted_result.png"
-LADDER_INSTANCES_CSV = "MoBI_outputs/ladder_segmentations_real_size3/ladder_instances.csv"
+LADDER_INSTANCES_CSV = "MoBI_outputs/ladder_segmentations_real_size5_FILTERED/ladder_instances.csv"
 
 DDIM_STEPS     = 50
 IMAGE_SIZE     = 512
