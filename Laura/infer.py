@@ -30,6 +30,12 @@ for p in [MOBI_ROOT, MY_FOLDER, TAMING_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from ladder_placement_test import (
+    load_depth_model, load_segformer, estimate_depth, segment_image,
+    estimate_ladder_pixel_height, parse_ground_boundary, sample_ground_boundary_at,
+    get_pca_corners, bottom_edge_corners, LADDER_HEIGHT_M, DEPTH_CHECKPOINT, SEGFORMER_MODEL
+)
+
 BACKGROUNDS_DIR = "robo_images/no_ladder"
 LADDER_DIR      = "robo_images/ladder"
 PLACEMENTS_CSV = "MoBI_outputs/background10_new/placements.csv"
@@ -91,78 +97,44 @@ def get_pca_corners(mask_tight):
         pts[idx_tl], pts[idx_tr], pts[idx_br], pts[idx_bl]
     ], dtype=np.float32)
 
-# def build_mask(x1, y1, x2, y2, H, W):
-#     mask = np.zeros((H, W), dtype=np.float32)
-#     mask[y1:y2, x1:x2] = 1.0
-#     return mask
+def warp_ladder_local(scaled_rgb, scaled_mask, src_corners, x1, x2, y_at_x1, y_at_x2, crop_x1, crop_y1, crop_W, crop_H):
+    """
+    Uses the scale=1.0 and PCA bottom edge rotation from ladder_placement_test
+    but targets the local crop coordinate space for the inpainting pipeline.
+    """
+    src_bl, src_br = bottom_edge_corners(src_corners)
 
-# def warp_to_slope(source_img, src_pca_pts, dst_x1, dst_y1, dst_x2, dst_y2_l, dst_y2_r, crop_W, crop_H, offset_px=(0, 0)):
-#     """
-#     Warp using the true oriented PCA corners of the ladder. 
-#     The bottom edge of the PCA box aligns with the sloped ground line.
-#     """
-#     # Sort PCA points by Y to find the "bottom" edge of the ladder
-#     sorted_by_y = src_pca_pts[src_pca_pts[:, 1].argsort()]
-#     top_pts = sorted_by_y[:2]
-#     bottom_pts = sorted_by_y[2:]
-    
-#     # Sort X to get Top-Left, Top-Right, Bottom-Left, Bottom-Right
-#     tl = top_pts[top_pts[:, 0].argsort()][0]
-#     tr = top_pts[top_pts[:, 0].argsort()][1]
-#     bl = bottom_pts[bottom_pts[:, 0].argsort()][0]
-#     br = bottom_pts[bottom_pts[:, 0].argsort()][1]
-    
-#     src_pts = np.array([tl, tr, bl, br], dtype=np.float32)
-    
-#     # The destination points: bottom edge locks to the ground slope (y2_l to y2_r)
-#     # Applying a slight parallel offset if needed (e.g. sinking slightly into the ground)
-#     ox, oy = offset_px
-#     dst_pts = np.array([
-#         [dst_x1 + ox, dst_y1 + oy],
-#         [dst_x2 + ox, dst_y1 + oy],
-#         [dst_x1 + ox, dst_y2_l + oy],
-#         [dst_x2 + ox, dst_y2_r + oy]
-#     ], dtype=np.float32)
+    dst_bl = np.array([x1 - crop_x1, y_at_x1 - crop_y1], dtype=np.float64)
+    dst_br = np.array([x2 - crop_x1, y_at_x2 - crop_y1], dtype=np.float64)
 
-#     M, _ = cv2.findHomography(src_pts, dst_pts)
-#     if M is None:  # Fallback to affine if homography fails
-#         M = cv2.getAffineTransform(src_pts[:3].astype(np.float32), dst_pts[:3].astype(np.float32))
-#         warped = cv2.warpAffine(source_img, M, (crop_W, crop_H), flags=cv2.INTER_LINEAR)
-#     else:
-#         warped = cv2.warpPerspective(source_img, M, (crop_W, crop_H), flags=cv2.INTER_LINEAR)
-    
-#     return warped
-def warp_to_slope(source_img, src_corners, dst_x1, dst_y1, dst_x2, dst_y2_l, dst_y2_r, canvas_W, canvas_H):
-    edges = sorted(get_edge_length(src_corners), key=lambda e: e[0])
-    _, ia, ib = edges[1]
-    bl_src = src_corners[ia].astype(np.float64)
-    br_src = src_corners[ib].astype(np.float64)
-    if bl_src[0] > br_src[0]:
-        bl_src, br_src = br_src, bl_src
-    bl_dst = np.array([dst_x1, dst_y2_l], dtype=np.float64)
-    br_dst = np.array([dst_x2, dst_y2_r], dtype=np.float64)
-
-    src_vec = br_src - bl_src
-    dst_vec = br_dst - bl_dst
+    src_vec   = src_br - src_bl
+    dst_vec   = dst_br - dst_bl
     src_angle = np.arctan2(src_vec[1], src_vec[0])
     dst_angle = np.arctan2(dst_vec[1], dst_vec[0])
-    angle = dst_angle - src_angle
-    scale = np.linalg.norm(dst_vec) / np.linalg.norm(src_vec)
+    angle     = dst_angle - src_angle
+    scale     = 1.0 # Force scale 1.0 so image is not stretched exactly as designed
 
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     R = scale * np.array([[cos_a, -sin_a], [sin_a, cos_a]])
-    dst_corners = ((src_corners - bl_src) @ R.T) + bl_dst
 
-    src_pts = src_corners.astype(np.float32)
-    dst_pts = dst_corners.astype(np.float32)
+    dst_corners = ((src_corners - src_bl) @ R.T) + dst_bl
+    src_pts     = src_corners.astype(np.float32)
+    dst_pts     = dst_corners.astype(np.float32)
+
     M, _ = cv2.findHomography(src_pts, dst_pts)
-
     if M is None:
         raise RuntimeError("no Homography found")
     
-    return cv2.warpPerspective(source_img, M, (canvas_W, canvas_H),
-                               flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
-                               borderValue=0)
+    warp_kwargs = dict(
+        dsize=(crop_W, crop_H),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    warped_rgb  = cv2.warpPerspective(scaled_rgb, M, **warp_kwargs)
+    warped_mask = cv2.warpPerspective(scaled_mask.astype(np.uint8), M, **warp_kwargs).astype(bool)
+    
+    return warped_rgb, warped_mask
 
 
 def main():
@@ -178,6 +150,10 @@ def main():
 
     config = OmegaConf.load(CONFIG_PATH)
 
+    print("Loading Depth Anything V2 & Segformer...")
+    depth_model = load_depth_model(DEPTH_CHECKPOINT, device)
+    seg_processor, seg_model = load_segformer(SEGFORMER_MODEL, device)
+
     print("Loading model...")
     model = instantiate_from_config(config.model)
     ckpt = torch.load(CHECKPOINT, map_location="cpu", weights_only=False)
@@ -190,6 +166,7 @@ def main():
     
     ladder_images = sorted(list(Path(LADDER_DIR).glob("*.jpg")))
     bg_names = df_placements["background_name"].unique().tolist()
+    bg_cache = {}
 
     for ladder_path in ladder_images:
         ladder_name = ladder_path.stem
@@ -208,25 +185,32 @@ def main():
                 continue
             
             placement = bg_placements.iloc[0]
-            # Assuming background_image or constructing from path
             BACKGROUND_IMG = placement.get("background_image", os.path.join(BACKGROUNDS_DIR, f"{bg_name}.jpg"))
             
             print(f"Processing: {ladder_name} on {bg_name}")
 
-            # background image
             bg_bgr = cv2.imread(BACKGROUND_IMG)
             if bg_bgr is None:
                 continue
             bg_rgb = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2RGB)
             H, W = bg_rgb.shape[:2]
 
-            # placement zone
-            x1, y1, x2 = int(placement.x1), int(placement.y1), int(placement.x2)
-            y2_l, y2_r = int(placement.y2_left), int(placement.y2_right)
-            y2 = max(y2_l, y2_r)
-            print(f"Placement zone: X:({x1}->{x2}), Y_Top:{y1}, Y_Bottom_Slope:({y2_l}->{y2_r})")
+            if bg_name not in bg_cache:
+                print(f"  Running depth/seg on: {bg_name}")
+                bg_cache[bg_name] = (
+                    estimate_depth(depth_model, bg_bgr),
+                    *segment_image(seg_processor, seg_model, bg_rgb, device)
+                )
+            depth_map, seg_map, conf_map = bg_cache[bg_name]
 
-            # reference ladder image, mask, crop
+            x1, y1, x2 = int(placement.x1), int(placement.y1), int(placement.x2)
+            
+            gxs_full, gys_full = parse_ground_boundary(placement.get("ground_boundary", ""))
+            gxs, gys, y_at_x1, y_at_x2 = sample_ground_boundary_at(gxs_full, gys_full, x1, x2)
+
+            ladder_physical_h = float(ref_row.get("physical_length_m", LADDER_HEIGHT_M))
+            zone_depth_mean = float(np.median(depth_map[gys, gxs])) if len(gxs) > 0 else 0.0
+
             ref_bgr = cv2.imread(REFERENCE_IMG)
             ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
             ref_H, ref_W = ref_rgb.shape[:2]
@@ -235,51 +219,52 @@ def main():
             ys, xs   = np.where(ref_mask)
             pad      = 10
 
-            # cropped reference image (Paint-by-Example CLIP embeddings break if given pure black backgrounds)
             ref_crop   = ref_rgb[max(0, ys.min()-pad):ys.max()+pad, max(0, xs.min()-pad):xs.max()+pad]
             ref_pil    = Image.fromarray(ref_crop).resize((224, 224))
             ref_tensor = get_tensor_clip()(ref_pil).unsqueeze(0).to(device)
 
-            # tight crop for warping
             tight_y1, tight_y2 = ys.min(), ys.max() + 1
             tight_x1, tight_x2 = xs.min(), xs.max() + 1
             tight_rgb  = ref_rgb[tight_y1:tight_y2, tight_x1:tight_x2]
             mask_tight = ref_mask[tight_y1:tight_y2, tight_x1:tight_x2]
 
-            # PCA corners from mask
-            corners_in_tight = get_pca_corners(mask_tight)
+            # Use imported scale logic to resize the tight mask before moving into the local crop
+            px_h = estimate_ladder_pixel_height(
+                ladder_physical_h, seg_map, depth_map, conf_map, zone_depth_mean, H
+            )
+            if px_h is None:
+                px_h = tight_rgb.shape[0]
+            px_h = int(np.clip(px_h, int(H * 0.10), int(H * 0.85)))
 
-            # local crop around the placement zone
-            cx, cy    = (x1 + x2) // 2, (y1 + y2) // 2
-            box_size  = max(x2 - x1, y2 - y1)
+            orig_h, orig_w = tight_rgb.shape[:2]
+            scale_factor   = px_h / max(orig_h, 1)
+            new_h, new_w   = px_h, max(int(orig_w * scale_factor), 1)
+
+            scaled_rgb  = cv2.resize(tight_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            scaled_mask = cv2.resize(mask_tight.astype(np.uint8), (new_w, new_h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            
+            scaled_corners = get_pca_corners(scaled_mask)
+
+            # Local bounding box matching original infer logic but using accurate ground boundaries
+            cx, cy    = (x1 + x2) // 2, (y1 + max(y_at_x1, y_at_x2)) // 2
+            box_size  = max(x2 - x1, max(y_at_x1, y_at_x2) - y1)
             half_size = box_size // 2
 
             crop_y1, crop_y2 = max(0, cy - half_size), min(H, cy + half_size)
             crop_x1, crop_x2 = max(0, cx - half_size), min(W, cx + half_size)
 
-            # local coordinates of the placement zone within the crop
-            loc_x1   = x1   - crop_x1
-            loc_x2   = x2   - crop_x1
-            loc_y1   = y1   - crop_y1
-            loc_y2_l = y2_l - crop_y1
-            loc_y2_r = y2_r - crop_y1
-
-            # define crop
             bg_crop        = bg_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
             crop_H, crop_W = bg_crop.shape[:2]
 
-            # warp mask and image
-            ref_mask_placed = warp_to_slope(
-                mask_tight.astype(np.uint8), corners_in_tight,
-                loc_x1, loc_y1, loc_x2, loc_y2_l, loc_y2_r,
-                crop_W, crop_H
-            ).astype(bool)
-
-            ladder_ghost = warp_to_slope(
-                tight_rgb, corners_in_tight,
-                loc_x1, loc_y1, loc_x2, loc_y2_l, loc_y2_r,
-                crop_W, crop_H
-            )
+            try:
+                ladder_ghost, ref_mask_placed = warp_ladder_local(
+                    scaled_rgb, scaled_mask, scaled_corners, 
+                    x1, x2, y_at_x1, y_at_x2, 
+                    crop_x1, crop_y1, crop_W, crop_H
+                )
+            except RuntimeError as e:
+                print(f"  [SKIP] Homography failed: {e}")
+                continue
 
             bg_pil      = Image.fromarray(bg_crop).resize((IMAGE_SIZE, IMAGE_SIZE))
             mask_pil    = Image.fromarray(ref_mask_placed.astype(np.uint8) * 255).resize((IMAGE_SIZE, IMAGE_SIZE), Image.NEAREST)
