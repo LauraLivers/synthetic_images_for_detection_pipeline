@@ -604,11 +604,11 @@ if __name__ == "__main__":
 		"image_logger": {
 			"target": "main.ImageLogger",
 			"params": {
-				"batch_frequency": 400,
-				"max_images": 8,
+				"batch_frequency": 100000,
+				"max_images": 4,
 				"clamp": False,
 				"log_on_batch_idx": True,
-				"log_first_step": True,
+				"log_first_step": False,
 			}
 		},
 		"learning_rate_logger": {

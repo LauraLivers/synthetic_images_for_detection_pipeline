@@ -472,11 +472,11 @@ class LatentDiffusion(DDPM):
         ignore_keys = kwargs.pop("ignore_keys", [])
         super().__init__(conditioning_key=conditioning_key, *args, **kwargs)
     
-        # CFG
-        self.learnable_vector = nn.Parameter(torch.randn((1,1,768)), requires_grad=False)
+        # CFG - Classifier Free Guidance
+        self.learnable_vector = nn.Parameter(torch.randn((1,1,768)), requires_grad=True) # change it will learn something - False means it's randomly initialized
         self.bbox_uncond_vector = nn.Parameter(torch.randn((1,1,768)), requires_grad=True)
 
-        self.proj_out=nn.Linear(1024, 768).requires_grad_(False)
+        self.proj_out=nn.Linear(1024, 768).requires_grad_(True) # change so it will actually train - with False it's randomly initialized
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
         self.cond_stage_key = cond_stage_key
@@ -583,6 +583,10 @@ class LatentDiffusion(DDPM):
             self.cond_stage_model.requires_grad_(False)
             if hasattr(self.cond_stage_model, "bbox_embedder"):
                 self.cond_stage_model.bbox_embedder.requires_grad_(True)
+            if hasattr(self.cond_stage_model, "mapper"):
+                self.cond_stage_model.mapper.requires_grad_(True)
+            if hasattr(self.cond_stage_model, "final_ln"):
+                self.cond_stage_model.final_ln.requires_grad_(True)
                 # self.cond_stage_model.bbox_embedder.class_embedder.requires_grad_(False)
 
 
@@ -1622,16 +1626,30 @@ class LatentDiffusion(DDPM):
             if (
                 "cond_adapter" in name or
                 "lidar" in name or 
-                "cross_modal" in name
-                # "attn1" in name or
-                # "attn2" in name or
-                # "norm1" in name or
-                # "norm2" in name
+                "cross_modal" in name or
+                #"attn1" in name or
+                "attn2" in name or
+                #"norm1" in name or
+                "norm2" in name
             ):
                 params.append(param)
                 param_names.append(name)
-                assert param.requires_grad, f"{name} requires grad is False"
+                #assert param.requires_grad, f"{name} requires grad is False"
+        params.append(self.proj_out.weight)
+        params.append(self.proj_out.bias)
+        param_names.append("proj_out.weight")
+        param_names.append("proj_out.bias")
+        params.append(self.learnable_vector)
+        param_names.append("learnable_vector")
 
+        if hasattr(self.cond_stage_model, "mapper"):
+            for name, p in self.cond_stage_model.mapper.named_parameters():
+                params.append(p)
+                param_names.append(f"cond_stage_model.mapper.{name}")
+        if hasattr(self.cond_stage_model, "final_ln"):
+            for name, p in self.cond_stage_model.final_ln.named_parameters():
+                params.append(p)
+                param_names.append(f"cond_stage_model.final_ln.{name}")
         if self.cond_stage_trainable:
             if "ref_bbox" in self.cond_stage_key:
                 print(f"{self.__class__.__name__}: optimizing bbox conditioning params!")
@@ -1687,11 +1705,11 @@ class DiffusionWrapper(pl.LightningModule):
             if (
                 "cond_adapter" in name or
                 "lidar" in name or 
-                "cross_modal" in name
-                # "attn1" in name or
-                # "attn2" in name or
-                # "norm1" in name or
-                # "norm2" in name
+                "cross_modal" in name or
+                #"attn1" in name or
+                "attn2" in name or
+                #"norm1" in name or
+                "norm2" in name
             ):
                 param.requires_grad = True
             else:

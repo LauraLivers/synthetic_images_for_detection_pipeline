@@ -142,7 +142,7 @@ def main():
     random.seed(0)
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     print(f"Device: {device}")
 
     from omegaconf import OmegaConf
@@ -245,7 +245,7 @@ def main():
             
             scaled_corners = get_pca_corners(scaled_mask)
 
-            # Local bounding box matching original infer logic but using accurate ground boundaries
+            # Local bounding box using ground boundaries
             cx, cy    = (x1 + x2) // 2, (y1 + max(y_at_x1, y_at_x2)) // 2
             box_size  = max(x2 - x1, max(y_at_x1, y_at_x2) - y1)
             half_size = box_size // 2
