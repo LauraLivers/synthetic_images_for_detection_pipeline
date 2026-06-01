@@ -25,3 +25,16 @@ Laura/DifCL_images/
 MoBI_outputs/
 taming-transformers/
 Laura/pyproject.toml
+
+# YOLO and Dataset generation weights and generated images
+**/*.pt
+**/*.pth
+Laura/dataset_mobi_augmented*/
+Laura/dataset_real_baseline/
+Laura/robo_images.dvc
+Laura/wandb/
+
+# Ignore output directories with images
+Laura/bounding_boxes/
+Laura/yolo_with_sd/
+**/*.csv
