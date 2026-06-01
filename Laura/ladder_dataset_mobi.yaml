@@ -9,8 +9,7 @@ image_width: 512
 latent_size: 64 # image_width // 8
 
 batch_size: 1 # keep at 2; dataset is small
-num_workers_per_gpu: 4
-
+num_workers_per_gpu: 0 # OOM issue A16
 # No range view — depth conditioning comes from 3-D bbox corners only
 range_object_norm: False
 range_object_norm_scale: 0.75
@@ -70,7 +69,7 @@ model:
         use_spatial_transformer: True
         transformer_depth: 1
         context_dim: 768
-        use_checkpoint: False
+        use_checkpoint: True
         legacy: False
         add_conv_in_front_of_unet: False
         bbox_cond: True
@@ -112,7 +111,7 @@ data:
     train:
       target: ladder_dataset_mobi.LadderDatasetTrain
       params:
-        csv_path: MoBI_outputs/ladder_segmentations_real_size3/ladder_instances.csv   # HARDCODED!
+        csv_path: MoBI_outputs/ladder_segmentations_real_size5_FILTERED/ladder_instances.csv   # HARDCODED!
         image_height: ${image_height}
         image_width: ${image_width}
         expand_mask_ratio: 0.12 # slightly wider inpaint zone than mask
@@ -130,7 +129,7 @@ data:
     validation:
       target: ladder_dataset_mobi.LadderDatasetVal
       params:
-        csv_path: MoBI_outputs/ladder_segmentations_real_size3/ladder_instances.csv  # same file, val split
+        csv_path: MoBI_outputs/ladder_segmentations_real_size5_FILTERED/ladder_instances.csv  # same file, val split
         image_height: ${image_height}
         image_width: ${image_width}
         expand_mask_ratio: 0.12
@@ -153,3 +152,4 @@ lightning:
     accelerator: 'gpu'
     gpus: "0"
     precision: 16
+    accumulate_grad_batched: 4
