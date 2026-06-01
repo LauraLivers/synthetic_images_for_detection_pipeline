@@ -5,9 +5,8 @@ using the trained Paint-by-Example model.
 Usage:
     uv run python infer.py
 """
-
-import os
 import sys
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -26,7 +25,11 @@ MOBI_ROOT      = os.path.abspath("../MobI")
 MY_FOLDER      = os.path.abspath(".")
 TAMING_ROOT    = os.path.abspath("../taming-transformers")
 
-for p in [MOBI_ROOT, MY_FOLDER, TAMING_ROOT]:
+DEPTH_ROOT     = os.path.abspath("Depth-Anything-V2")
+SAM2_ROOT      = os.path.abspath("sam2")
+SEG_ROOT       = os.path.abspath("SegFormer")
+
+for p in [MOBI_ROOT, MY_FOLDER, TAMING_ROOT, DEPTH_ROOT, SAM2_ROOT, SEG_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -39,9 +42,9 @@ from ladder_placement_test import (
 BACKGROUNDS_DIR = "robo_images/no_ladder"
 LADDER_DIR      = "robo_images/ladder"
 PLACEMENTS_CSV = "MoBI_outputs/background10_new/placements.csv"
-CHECKPOINT     = "../MoBI_outputs/mobi_inpaining1/2026-04-14T02-17-13_ladder_dataset_mobi/checkpoints/epoch=000005.ckpt"
+CHECKPOINT     = "../MoBI_outputs/mobi_inpainting2/2026-05-31T11-03-19_ladder_dataset_mobi/checkpoints/epoch=000001.ckpt"
 CONFIG_PATH    = "ladder_dataset_mobi.yaml"
-OUTPUT_DIR     = "MoBI_outputs/inpaint_results"
+OUTPUT_DIR     = "MoBI_outputs/inpaint_results_lambda1.2"
 LADDER_INSTANCES_CSV = "MoBI_outputs/ladder_segmentations_real_size5_FILTERED/ladder_instances.csv"
 
 DDIM_STEPS     = 50
@@ -138,11 +141,9 @@ def warp_ladder_local(scaled_rgb, scaled_mask, src_corners, x1, x2, y_at_x1, y_a
 
 
 def main():
-    import random
-    random.seed(0)
-    
+       
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     print(f"Device: {device}")
 
     from omegaconf import OmegaConf
@@ -245,7 +246,7 @@ def main():
             
             scaled_corners = get_pca_corners(scaled_mask)
 
-            # Local bounding box matching original infer logic but using accurate ground boundaries
+            # Local bounding box using ground boundaries
             cx, cy    = (x1 + x2) // 2, (y1 + max(y_at_x1, y_at_x2)) // 2
             box_size  = max(x2 - x1, max(y_at_x1, y_at_x2) - y1)
             half_size = box_size // 2

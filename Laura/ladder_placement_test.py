@@ -1,7 +1,18 @@
 print("STARTING", flush=True)
+import subprocess, os, sys
 
-import os
-import sys
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+if not os.path.exists("Depth-Anything-V2/depth_anything_v2_vitb.pth"):
+    from huggingface_hub import hf_hub_download
+    hf_hub_download("depth-anything/Depth-Anything-V2-Base", "depth_anything_v2_vitb.pth", local_dir="Depth-Anything-V2")
+if not os.path.exists("sam2/sam2"):
+    subprocess.run(["git", "clone", "https://github.com/facebookresearch/sam2", "sam2_code"], capture_output=True)
+    os.rename("sam2_code/sam2", "sam2/sam2")
+
+sys.path.insert(0, "Depth-Anything-V2")
+sys.path.insert(0, "sam2")
+
 import cv2
 import torch
 import numpy as np
@@ -22,7 +33,7 @@ LADDER_INSTANCES_CSV = "./MoBI_outputs/ladder_segmentations_real_size5_FILTERED/
 OUTPUT_DIR           = "./MoBI_outputs/batch_warp_v2"
 
 DEPTH_ANYTHING_REPO  = "./Depth-Anything-V2"
-DEPTH_CHECKPOINT     = "./Depth-Anything-V2/checkpoints/depth_anything_v2_vitb.pth"
+DEPTH_CHECKPOINT     = "./Depth-Anything-V2/depth_anything_v2_vitb.pth"
 SEGFORMER_MODEL      = "nvidia/segformer-b2-finetuned-ade-512-512"
 
 # ── Physical ladder height (metres) ─────────────────────────────────────────
@@ -63,7 +74,7 @@ def get_device():
 
 def load_depth_model(checkpoint, device):
     model = DepthAnythingV2(encoder="vitb", features=128, out_channels=[96, 192, 384, 768])
-    model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
+    model.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=False))
     return model.to(device).eval()
 
 
