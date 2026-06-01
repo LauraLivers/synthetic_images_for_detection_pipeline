@@ -41,4 +41,5 @@ dependencies = [
     "ultralytics>=8.4.22",
     "wandb>=0.25.1",
     "test-tube>=0.7.5",
+    "optuna>=4.8.0",
 ]
