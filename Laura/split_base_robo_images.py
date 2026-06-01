@@ -134,17 +134,16 @@ def inject_synthetic_to_train(baseline_dir, synth_images_dir, synth_annotations_
     print(f"To re-balance back to base ratio, you need to add {backgrounds_needed} extra 'no_ladder' background images into: {train_img_dir.name}")
 
 if __name__ == "__main__":
-    # Absolute paths
-    BASE_DIR = "/Users/laura/Desktop/ba_thesis/Laura"
-    ROBO_IMAGES = f"{BASE_DIR}/robo_images"
-    
-    # Phase 1 Paths
-    REAL_ANNS = f"{ROBO_IMAGES}/yolo_annotations"
-    BASELINE_OUTPUT = f"{BASE_DIR}/dataset_real_baseline"
+    CURRENT_DIR = Path(__file__).parent.resolve()
+    ROBO_IMAGES = CURRENT_DIR / 'robo_images'
+    REAL_ANNS = ROBO_IMAGES / 'yolo_annotations'
+    SYNTH_ANNS = ROBO_IMAGES / 'yolo_annotations_mobi'
+    BASELINE_OUTPUT = CURRENT_DIR / 'dataset_real_baseline'
     
     # Phase 2 Paths
-    SYNTH_MOBI_IMGS = f"{BASE_DIR}/MoBI_outputs/selected_synthetic_images"
-    SYNTH_MOBI_ANNS = f"{ROBO_IMAGES}/yolo_annotations_mobi"
+    BASE_DIR = CURRENT_DIR.parent
+    SYNTH_MOBI_IMGS = BASE_DIR / 'MoBI_outputs' / 'selected_synthetic_images'
+    SYNTH_MOBI_ANNS = ROBO_IMAGES / 'yolo_annotations_mobi'
     
     # Execute Phase 1: Lock Evaluation datasets based ONLY on real images
     setup_real_baseline(ROBO_IMAGES, REAL_ANNS, BASELINE_OUTPUT)
