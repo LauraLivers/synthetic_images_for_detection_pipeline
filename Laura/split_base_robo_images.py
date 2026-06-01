@@ -48,7 +48,8 @@ def setup_real_baseline(base_dir, annotations_dir, out_dir, seed=42):
                 label_target = out_path / split / 'labels' / label_name
                 
                 # Label studio adds an 8-character prefix + "-" to the original filename
-                label_matches = list(ann_dir.glob(f"*{img.stem}.txt"))
+                # Use rglob so we match files in nested folders (Label Studio exports may be nested)
+                label_matches = list(ann_dir.rglob(f"*{img.stem}.txt"))
                 
                 if label_matches and cls_name != 'no_ladder':
                     shutil.copy2(label_matches[0], label_target)
@@ -141,8 +142,7 @@ if __name__ == "__main__":
     BASELINE_OUTPUT = CURRENT_DIR / 'dataset_real_baseline'
     
     # Phase 2 Paths
-    BASE_DIR = CURRENT_DIR.parent
-    SYNTH_MOBI_IMGS = BASE_DIR / 'MoBI_outputs' / 'selected_synthetic_images'
+    SYNTH_MOBI_IMGS = CURRENT_DIR / 'MoBI_outputs' / 'selected_synthetic_images'
     SYNTH_MOBI_ANNS = ROBO_IMAGES / 'yolo_annotations_mobi'
     
     # Execute Phase 1: Lock Evaluation datasets based ONLY on real images
