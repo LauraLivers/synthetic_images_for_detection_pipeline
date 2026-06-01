@@ -69,7 +69,7 @@ def inject_synthetic_to_train(baseline_dir, synth_images_dir, synth_annotations_
     synth_images_dir = Path(synth_images_dir)
     synth_annotations_dir = Path(synth_annotations_dir)
     
-    new_dataset_dir = Path(f"/Users/laura/Desktop/ba_thesis/Laura/dataset_mobi_augmented_{int(synth_percentage*100)}pct")
+    new_dataset_dir = baseline_dir.parent / f"dataset_mobi_augmented_{int(synth_percentage*100)}pct"
     
     # 1. Copy the entire baseline to preserve exact val/test arrays
     if new_dataset_dir.exists():
