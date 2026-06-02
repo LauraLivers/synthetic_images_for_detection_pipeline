@@ -114,9 +114,9 @@ def inject_synthetic_to_train(baseline_dir, synth_images_dir, synth_annotations_
             shutil.copy2(label_matches[0], train_label_dir / (img.stem + ".txt"))
         synth_added += 1
 
-    # Create proper dataset.yaml for the variant
+    # Create proper dataset.yaml for the variant (use relative paths for cross-platform compatibility)
     with open(new_dataset_dir / 'dataset.yaml', 'w') as f:
-        f.write(f'path: {new_dataset_dir.absolute()}\n')
+        f.write('path: .\n')
         f.write('train: train/images\n')
         f.write('val: val/images\n')
         f.write('test: test/images\n')
