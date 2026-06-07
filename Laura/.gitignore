@@ -4,3 +4,5 @@ hard_samples.csv
 wandb/
 grad_cam
 yolov8n.pt
+INFERENCE_*
+dataset_mobi_synth_aug/*
