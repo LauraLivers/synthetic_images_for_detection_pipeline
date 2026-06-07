@@ -1,10 +1,176 @@
 \chapter{Realization}
 
-\section{Implementation}
-Placeholder for the implementation. Describe how the concepts and methods were put into practice.
+\section{Base dataset construction}
+The base dataset was collected by conducting a patrol with the Ascento Guard 
+in the presence of two ladders around the Ascento Workshop in Zürich. 
+During this patrol images were captured across varying distances, angles, 
+and background representative of real deployment scenarios. Thermal images 
+were separated from RGB images and excluded, as thermal imagery is handled 
+by a separate detection pipeline and is out of scope for this work. The 
+remaining RGB images were manually sorted by whether they contained a 
+ladder, resulting in a dataset containing 376 images: 
+160 containing at least one ladder (42.5\%) and 216 containing no ladder (57.5\%).
+All ladder images were annotated with bounding boxes in \gls{labelstudio}. 
+Every ladder instance was annotated regardless of occlusion or visibility, 
+including partially visible ladders at the image boundary and instances at 
+significant distance. Annotations were exported in \gls{yolo} format with one 
+label file per image containing normalized bounding box coordinates and 
+class index.
+[images with bounding boxes]
+The dataset was split into training, validation, and test sets at a 70/15/15 
+ratio, with the ladder-to-no-ladder class ratio preserved across all three parts. 
 
-\section{Technical Details}
-Placeholder for technical details. Provide specifics about the system, algorithms, or artefacts created.
+\section{Implementation YOLO: Inference only}
+The starting point is \gls{yolo}v8-oiv7\footnote{https://huggingface.co/shirabendor/YOLOV8-oiv7/tree/main}, pretrained on Google's Open Images V7 dataset\footnote{https://storage.googleapis.com/openimages/web/visualizer/index.html?type=detection&set=train&c=\%2Fm\%2F03hl4l9}, 
+which already containes ladder as a class (index 298).
+Before any fine-tuning, inference was run across the full dataset to establish a baseline and 
+verify that the pretrained model could detect ladders at all in the robot's camera domain. 
+Detections were filtered at a confidence threshold of 0.5, with all predictions below this threshold 
+flagged as low-confidence. Of the 160 images containing ladders, the pretrained model produced 
+confident detections on only 37, yielding 123 false negatives and 0 false positives. 
+This confirmed that while the pretrained weights carry transferable ladder semantics, 
+the domain gap between Open Images and the robot's images is substantial enought to 
+require fine-tuning. 
 
-\section{Challenges and Solutions}
-Placeholder for challenges and solutions. Discuss obstacles encountered during realization and how they were resolved.
+\section{Implementation YOLO: finetuning}
+Fine-tuning was performed on the training split of 263 images (70\%), 
+with the first 22 layers of the \gls{cspdarknet53} backbone frozen throughout. 
+Freezing the backbone preserves the general visual feature representations 
+aquired during pretraining on Open Images. Updating these weights on a 
+dataset of 263 images would overwrite learned representations that took 
+orders of magnitude more data to acquire, destabilizing training and 
+degrading generalization. Only the detection head is left unfrozen, 
+allowing it to adapt its class specific predictions to the robot's 
+camera domain while retaining the backbone's feature extraction capacity. 
+
+\section{Implementation DiffCL}
+The implementation is based on the authors' reference repository for \gls{discl}\cite{diffusion-curriculum}
+which contains [description of file structure] including a model file implementing the modified Stable Diffusion XL\cite{stable-diffusion-xl}} pipeline, curriculum, and a demo notebook. 
+The model file was kept intact for this implementation. The generation pipeline was rewritten as configurable 
+script around it, resolving all hardware and architectural incompatibilites in the process. The curriculum 
+training component was not used: output quality was sufficiently poor that exposing a classifier to a 
+curriculum of generated images served no purpose. The demo notebook hardcodes the Stable Diffusion XL\cite{stable-diffusion-xl} refiner variant, 
+which is specialized for the final denoising steps of an alreay high-quality latent and is not designed for 
+generation from a noisy starting point. Beyond this architectural mismatch, the notebook loads the pipeline under float16
+on \gls{cuda} with no hardware fallback. The rewrite replaces the refiner with a base generation model, introduces explicit device detection with a
+float32 fallback for \gls{mps} where bfloat16 is not supported, and enables model \gls{cpu} offloading on \gls{gpu} to stay within \gls{vram} budget. 
+The inital working version ran on Stable Diffusion XL\cite{stable-diffusion-xl}-base. Given the afforementioned poor output quality, the pipeline was upgraded to 
+Stable Diffusion 3.5-large\cite{sd3.5}. Its \gls{mmdit} architecture required additional changes such as image size as multiple of 64 rater 
+than 8 before inference, and a rescaling logic back to original resolution afterwards. The Stable Diffusion XL\cite{stable-diffusion-xl}-specific micro-conditioning 
+parameters original_size and target_size were removed entirely and the inference steps were increased to the Stable Diffusion 3.5-large\cite{sd3.5} default of 28. 
+As the Stable Diffusion 3.5-large\cite{sd3.5} exeeded memory capacity on both the \gls{m1} and \gls{gpu} cluster, Stable Diffusion 3.5-large\cite{sd3.5}-medium was used. 
+Output quality did not improve substantially with the upgrade. 
+The original demo is built around the iWildCam\footnote{https://wilds.stanford.edu/datasets/#iwildcam} dataset, a large-scale wildlife camera trap benchmark, 
+with class names resolved via pickled species taxonomy and a prompt template derived from it. 
+Adapting the pipeline to a single configurable target class required replacing the entire conditioning mechanism with a class anchor that can be set per use case. 
+Scene context is handled through location-specific prompts reflecting the environments present in the base dataset. 
+The original pipeline applies a text guidance scale of 10 regardless of the image guidance level. This resulted in visually incoherent
+outputs where text guidance and reference image seems to be at odds with each other across all levels. To mitigate this, the text guidance was coupled inversely to the image guidance through
+a linear function. This reduces the text-pull as the image guidance increases, enabling smoother transitions across the guidance spectrum. 
+Contrary to the original implementation, the image dimensions are preserved and rounded to the next valid multiple for the architecture, to avoid introducing resampling artefacts during the generation process. 
+
+The original \gls{clip} filter operates on \gls{cosine similarity} between the generated embedding and the text prompt embedding at a threshold of $0.25$. This was replaced with
+an image-to-image \gls{cosine similarity} against the source image at $0.7$ filtering for proximity to the source domain. 
+In practice, every generated image passed this threshold regardless of visual quality. This confirmed that \gls{clip} image similarity is not a reliable quality signal for this generation regime. 
+Generation was run on $12$ images out of the $123$ false negatives from [Section 5.2] and run systematically across random seeds and guidance scales to produce $240$ synthetic images. 
+
+\section{Implementation MobI}
+The \gls{mobi}\cite{mobi} repository provides a \gls{pbe}\cite{pbe} extension that inpaints a reference object 
+into a target scene conditioned on a projected 3D bounding box, with weights pretrained on NuScenes\cite{nuscene}. 
+Beyond RGB images, NuScenes provides calibrated camera intrinsics, \gls{lidar} point clouds, and metric-scale 3D bounding box annotations per object. 
+These supply the depth, scale, and spatial orientation information that \gls{mobi}'s geometric conditioning requires. 
+The base dataset described in Section [5.1] contains none of this information.
+Applying \gls{mobi} to this domain therefore requires constructing all geometric conditioning from the images themselves. 
+The first problem to solve is characterising each ladder instance geometrically. SAM2\cite{sam2} segments each ladder using the \gls{yolo} bounding boxes 
+from [Section 5.1] as spatial prompts producing a binary pixel mask per instance. The default SAM2\cite{sam2} logit threshold of 0.0 captures significant 
+false positive regions outside the ladder structure and was adapted to 2.4. 
+[image of segmentation masks ladder]
+From this binary mask, applying \gls{pca} over the pixel coordinates returns the principal axes, 
+from which four oriented bounding box corners are derived, by projecting pixels onto the long and short axes and taking their extremes. 
+This gives a geometrically consistent representation of ladder orientation regardless of lean angle, and the two bottom-edge corners anchor 
+the ladder's base for subsequent warping. 
+[image PCA]
+The second problem is recovering a metric scale from a monocular image. Depth Anything V2\cite{depthanything2} produces affine-invariant inverse depth: 
+its output is a disparity map with with arbitrary scale and shift, not metric depth. To estimate how tall a ladder of known physical height should appear 
+in pixels given a scene location, the disparity map is cross-referenced against reference objects of known real-world height detected by SegFormer\cite{segformer}.
+For each reference object detected at confidence above 0.8, the ratio of its pixel extent to its known physical height, corrected for its disparity relative 
+to the target location, gives an estimate of the pixel-to-meter scaling at that depth. Estimates from multiple reference objects are aggregated by median. 
+[image dav2 with mask]
+Objects whose disparity differs from the target location by more than a factor of three are rejected, as beyond this ration the affine shift of Depth Anything V2\cite{depthanything2}
+dominates and the correction becomes unreliable. 
+[image reference objects]
+The same mechanism then also runs on the background images to estimate the correct pixel height for ladder placement at each zone's depth. 
+Valid placement zones in background images are identified by running SegFormer\cite{segformer} to classify horizontal and vertical surfaces (classes). 
+The intersection curve of these surfaces are then stored with their ground boundary coordinates.
+At inference the segmented ladder crop is scaled to the estimated pixel height for the target zone. 
+The \gls{pca} corners are recomputed on the scaled mask, and a homography aligns the ladder's bottom-edge corners to the ground boundary at the placement zone. 
+This warps the ladder into the background's local coordinate frame while preserving its physical orientation. 
+[image]
+The warped ladder is composited into the background as a ghost image before the inpainting mask is applied, giving the model a structural prior on 
+object position. The \gls{ddim} sampler from the original MobI\cite{mobi} pipeline then fills the masked region conditioned on the reference crop and pseudo-3D bounding 
+box coordinates projected from the \gls{pca} corners.
+[image]
+
+\subsection*{Training}
+With the geometric conditioning pipeline in place, the \gls{pbe} model was fine-tuned on the 
+hard-negative samples from Section~\ref{sec:yolo-inference}: the 123 images containing ladders that the pretrained \gls{yolo} failed to detect at the 0.5 confidence threshold. 
+Training ran for 8 epochs. Given \gls{pbe}'s parameter count and the limited size of the training set, severe overfitting was anticipated. The five best checkpoints were therefore kept. 
+This expectation was confirmed by the validation loss trajectory: \texttt{val/loss\_simple\_ema} 
+reached its minimum of $0.100$ at epoch~1 (global step~3999) and diverged , 
+rising monotonically through epoch~7 to $0.118$ (see Table~\ref{tab:mobi-training}).
+
+\begin{table}[!htbp]
+  \centering
+  \caption{MobI fine-tuning: validation loss per epoch.}
+  \label{tab:mobi-training}
+  \begin{tabular}{@{} c c c @{}}
+    \toprule
+    Epoch & Global step & \texttt{val/loss\_simple\_ema} \\
+    \midrule
+    0 & 1\,999  & 0.10439 \\
+    1 & 3\,999  & \textbf{0.10012} \\
+    2 & 5\,999  & 0.13930 \\
+    3 & 7\,999  & 0.12762 \\
+    4 & 9\,999  & 0.11643 \\
+    5 & 11\,999 & 0.11050 \\
+    6 & 13\,999 & 0.11875 \\
+    7 & 15\,999 & 0.11775 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection*{Inference and visual inspection}
+Inference was run using the epoch~0 and epoch~1 checkpoints, as these precede the overfitting. Each ladder instance was composited into 
+three distinct background scenes, resulting in $2 \times 149 \times 3 = 298 + 298 = 596$ candidate images in total. All generated images were visually inspected; 
+an image was retained only if it satisfied three criteria simultaneously: no geometric artefacts, no out of domain colouring or texture bleeding, and a placement that was physically plausible within the scene geometry. 
+Of the 596 candidates, \textbf{56 images} passed this inspection and were carried forward as synthetic augmentation data.
+
+\subsection*{Dataset construction}
+A dedicated script assembled the augmented training sets from the accepted synthetic images. 
+To avoid altering the ladder-to-no-ladder ratio established in the base dataset (42.5\,\%\,/\,57.5\,\%), the script computes for each synthetic injection level how many additional background-only images 
+must be added via classical augmentation so that the class distribution is preserved after the synthetic ladder images are inserted. 
+Five dataset variants were produced in this way:
+
+\begin{table}[!htbp]
+  \centering
+  \caption{Augmented dataset variants used for \gls{yolo} fine-tuning experiments.}
+  \label{tab:datasets}
+  \begin{tabular}{@{} l c c c @{}}
+    \toprule
+    Variant & Synthetic images added & Classical bg.\ images added & Total images \\
+    \midrule
+    Raw baseline &  0  &  0  & 263 \\
+    +5\,\%       & 13  & 17  & 293 \\
+    +8\,\%       & 21  & 28  & 312 \\
+    +10\,\%      & 26  & 34  & 323 \\
+    +20\,\%      & 52  & 69  & 384 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Each variant is stored as a directory compatible with the \gls{yolo} training pipeline, allowing ablation experiments to be run by switching the dataset 
+path without any further preprocessing.
+
+\section{Training Setup}
+
+

@@ -1,25 +1,36 @@
 \chapter{Methods}
 
-\section{Research Methodology}
-% Placeholder — describe the scientific or engineering methods applied.
-
+Progress was coordinated through biweekly meetings with the product owner at Ascento and the academic advisor, serving 
+as informal checkpoints to review results, reprioritize implementation effort, 
+and surface blockers early. No formal process model was imposed: given the exploratory nature of the work and the 
+tight feedback loop afforded by working within the company, 
+a lightweight review cadence was more appropriate than a structured sprint framework. 
+Requirements were not formalized in a separate document. Working directly within Ascento's 
+engineering context procided sufficient domain knowledge to derive the operational constraints implicitly: 
+false negatives are the critical failure mode, as a missed detection on a live patrol has no downstream safety net, 
+whereas false positives are surfaced to human reviewers and therefore recoverable. These constraints translate directly 
+into the choice of \gls{map@50} as the primary benchmark metric and the explicit minimization of false negative rate as 
+the recondary optimization objective, as defined in !!!!!!!!!
 \section{Data and Tools}
 % Placeholder — describe datasets, software, and instruments used.
-% Example citation: \cite{author_keyword_year}
-
-% --- EQUATION TEMPLATE ---
-% \begin{equation}
-%     \label{eq:your_label}
-%     \mathcal{L} = -\sum_{c=1}^{C} y_c \log \hat{y}_c
-% \end{equation}
-
-\section{Experimental Setup}
-% Placeholder — describe how experiments or studies were designed and conducted.
-
-% --- FIGURE TEMPLATE ---
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.8\textwidth]{your_image_filename}   % filename without extension, file goes in figs/
-%     \caption{Your caption text.}
-%     \label{fig:your_label}
-% \end{figure}
+All code and configuration are version-controlled via \gls{git}. 
+Dataset variants are tracked independently using \gls{dvc}, 
+which maintains a reproducible record of each augmentation stage 
+without storing large binary files in the repository. 
+Dependency management across the pipeline's heterogeneous components is 
+handled via \gls{uv}, ensuring reproducible environments across machines. 
+\gls{yolo} training runs are tracked in \gls{wandb} with generation 
+parameters and synthetic yiels rates logged directly in the codebase 
+alongside training metrics, providing a complete record linking 
+each dataset variant to its downstram detector performance.  
+Hyperparameter search is automated via \gls{optuna} which runs structured 
+sweeps over the training configuration and selects the combination 
+that maximizes validation \gls{map@50} within a fixed compute budget. 
+Training infrastructure was split across two environments determined 
+by hardware constraints. All components except \gls{pbe} were trained 
+and run locally on a Apple \gls{m1} chip.
+\gls{pbe} requires \gls{cuda} and was therefore executed on the 
+\gls{hslu} GPUhub using a single Nvidia A16 core. This split introduced no methodological 
+inconsistencies but is noted as a reproducibility consideration: results on the \gls{m1} and 
+on \gls{cuda} hardware may differ numerically due to floating point implementation 
+differences across backends. 

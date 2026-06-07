@@ -1,7 +1,86 @@
 \chapter{Ideas and Concepts}
 
-\section{Proposed Approach}
-Placeholder for the proposed approach. Outline the main ideas and conceptual design of the solution.
+\section{Overall Pipeline Concept}
+Bridging the data gap identified in (REFERENCE SECTION 1.2) requires an end-to-end workflow that connects 
+synthetic data generation to detector training and evaluation under a unified benchmark. The proposed pipeline 
+takes a scarce base dataset of real images as its starting point and produces a set of dataset variants through 
+progressively synthetic augmentation strategies, ranging from classical geometric and photometric transforms to fully
+ generative image synthesis.
+ Each variant is used to train a \gls{yolo} detector under identical hyperparameters, comparing its performance systematically. 
+Synthetic data quality is therefore not assessed in isolation but through its downstream effect on \gls{map@50}, precision, recall, and false negative rate. 
 
-\section{Conceptual Design}
-Placeholder for the conceptual design. Describe the architecture or framework developed in this thesis.
+Two diffusion approaches are adopted, described in detail in [Sections 3.2] and [3.3] respectively. One generates new images by interpolating between a the real 
+base distribution and a text-conditioned synthetic one, while the other composites target object instances into new background scenes via inpainting. Both are 
+trained on the same scarce base dataset, and their output will be used to create the dataset variants.
+
+While advances in synthetic data generation have produced promising alternatives, the pipeline builds on diffusion-based image synthesis as its generative foundation. 
+Three-dimensional rendering and game-engine based synthesis have demonstrated strong results in controlled indoor settings, where scene geometry, lighting, 
+and object placement can be easily parameterized. The Ascento Guard operates almost exclusively outdoors and regularly covers missions of five kilometers and more, driving 
+through environments whose variability in terrain, vegetation, wheather conditions, and background clutter cannot be captured by any fixed scene graph. Modeling this exhaustively 
+per customer size would require a manual authoring effort that defeats the purpose of a generalizable pipeline. Diffusion-based synthesis sidesteps this problem by operating 
+directly in image space, inheriting the statistical properties of the real base dataset rather then attempting to reconstruct the deployment environement from geometric primitives. 
+
+\section{Approach A: Diffusion Curriculum}
+Standard text-guided diffusion synthesis lacks control over how closely generated images resemble the originals. When real training data is scarce or low-quality, text-only synthesis 
+introduces a distribution gap that hurts downstream classifier performance. \gls{discl}\cite{diffusion-curriculum} addresses this by using image guidance withing the reverse diffusion process to 
+produce a continuous spectrum of interpolations between a real image and a purely text-generated one. 
+The reverse diffusion process follows the standard \gls{ddpm} formulation. 
+At each timestep t the noise estimate is computed via classifier-free guidance:
+
+\begin{equation}
+    \label{eq:cfg-noise}
+    \hat{\varepsilon}_t = (1 + w) \varepsilon_\theta(z_t, t \mid c) - w \varepsilon_\theta(z_t, t)
+\end{equation}
+where $c$ s the text prompt injected into the \gls{u-net} vis cross-attention.
+$w$ controls the strength of that conditioning, and $\epsilon_\theta(z_t, t)$ is the unconditional prediction. The denoising step then produces $z_{t-1}$. 
+
+% CHECK THIS AGAIN
+\begin{equation}
+    \label{eq:denoising-step}
+    z_{t-1}= (\frac{1}{\sqrt{\alpha_t}})(z_t - (\frac{\beta_t} {\sqrt{1 - \tilde{\alpha}_t}}) \hat{\epsilon}_t) + \sqrt{\beta_t \epsilon}
+\end{equation}
+The variance schedule $\tilde{\alpha}_t, \alpha_t, \beta_T$  is fixed across all timesteps using \gls{ddim} and monotonically decreasing $\tilde{\alpha}_t$ 
+is what makes the image guidance work. The image guidance leve $\lambda \in [0,1]$ control where the reverse diffusion process begins. Rather than starting from \gls{isotropic Gaussian noise} $x_T$ 
+the latent of the real image $z_{real}$ is perturbed to timestep $t(\lambda)=\lfloor (1 -\lambda)\rfloor$:
+\begin{equation}
+    \label{eq:image-guidance}
+    z_{t(\lambda)} = \sqrt{\tilde{\alpha}_{t(\lambda)}} + \sqrt{(1 - \tilde{\alpha}_{t(\lambda)})}\cdot \epsilon, \epsilon \sim \mathcal{N}(0, 1)
+\end{equation}
+
+From this starting point, standard classifier-free guidance denoising proceeds conditioned on a text prompt $c$. A large $\lambda$ means $t(\lambda)$ is small; little noise is injected and $z_{real}$ dominates, 
+so the output closely resembles the original. A small $\lambda$ corresponds to a large $t(\lambda)$ resulting in the real image being heavily corrupted before denoising begins and the output is driven almost 
+entirely by the text prompt. This produces a full spectrum of synthetic data, varying jointly in diversity, quality, and proximity to the real distribution. The text prompt $c$, carrying class-level semantic 
+information, is injected at every denoising step regardless of $\lambda$. Generated images are then filtered for semantic fidelity using \gls{clipscore} and discarded if found to be below a task specific 
+threshold before the training begins. The curriculum then selects which guidance level to expose the model to at each training stage. For long-tail classification where tail classes suffer from data scarcity 
+and low diversity, a non-adaptive schedule is used. Training begins with low $\lambda$ synthetic images to exploit their diversity, and $\lambda$ is increased linearly until the data resembles the original 
+distribution. For low-quality data the optimal guidance level is not known in advance. An adaptive curriculum instead evaluates at each epoch the improvement in true-class confidence on a held out 
+validation subset for each available $\lambda$, then selects the guidance level that produced the greatest progress for the next training stage.
+On \gls{imagenet}, \gls{discl} raised tail-class accuracy from $4.4\%$ to $23.64\%$ over the cross-entropy baseline. On \gls{iwildcam} it achieves a 2.7\% \gls{ood} and 2.1\% ID \gls{macrof1} improvement over the strongest diffusion-augmentation baseline. 
+
+\section{Approach B: Multimodel object inpainting}
+\gls{mobi}\cite{mobi} extends Paint-by-Example to condition the reverse diffusion process on a projected 3D bounding box alongside the standard \gls{clip} reference token. The full conditioning vector at each denoising step is
+\begin{equation}
+    \label{eq:mobi-conditioning}
+    c = {c_{env}^C, c_{env}^R, c_{ref}, c_{box}^C, c_{box}^R, \tilde{m}^C, \tilde{m}^R}
+\end{equation}
+
+EXPLAIN VARIABLES!!!!!!!!!
+The model is trained to minimise the noise prediction loss over both camera and \gls{lidar} simultaneously. The eight 3D bounding box corner are projected into image space and augmented with depth from the \gls{lidar} projection to produce a depth-aware camera box. 
+Both the camera and LiDAR projections are encoded into conditioning tokens via \gls{fourier embeddings} followed by modality-specific trainable linear layers.
+These tokens are injected through a dedicated gated bounding box adapter interleaved with a frozen \gls{pbe} cross-attention layers, using zero-initialized gating as \gls{controlnet}. 
+Decoupling the adapter from the \gls{pbe} cross-attention layers keeps the bounding box spatial signale from interfering with the reference appearance already encoded in $c_{ref}$. 
+Without this separation, concatenating the box token directly into the \gls{pbe} cross-attention layer would degrade the perceptual alignment.  
+To enforce geometric consistency between camera and \gls{lidar} outputs, a cross-modal attention layer is interleaved at each \gls{u-net} block.
+Camera features $h^C$ attend to \gls{lidar} $h^R$  features via learnable projections $W_Q^C, W_K^R, W_V^R$.
+
+\begin{equation}
+    \label{eq:cross-modal-attention}
+    Attention^C = softmax(\frac{Q^C(K^R)^T} {\sqrt{d_{head}})} V^R
+\end{equation}
+with a residual update $h^C \leftarrow h^C + Gate^C(Attention^C)$ through zero-initialized gate. The network learns implicit alignment facilitated by the shared bounding box projections appearing both in 
+$c_{box}^C$ and $c_{box}^R$ 
+
+During training source and destination bounding boxes correspond to the same object at different timestamps, while at inference they can be chosen randomly. Reference are sampled with a \gls{beta(4,1)} 
+distribution over normalized temporal distance, biasing towards frames far from the insertion time stamp to prevent the network from learning trivial identity mapping. Empty bounding boxes with 
+with black reference images are included in 30\% of the training samples, forcing the model to reconstruct background from context alone. The autoencoders and all \gls{pbe} layers remain frozen: 
+only the bounding box encoder, bounding box adapter, and cross-modal attention layers are trained. 

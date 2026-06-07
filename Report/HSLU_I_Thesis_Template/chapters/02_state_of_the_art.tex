@@ -1,27 +1,90 @@
 \chapter{State of the Art}
+Ascento's existing detection pipeline is built around the YOLO family. In anticipation of the best outcome scenario, 
+where the trained detection model will be integrated into the existing architecture, a YOLO model was chosen. 
 
-\section{Related Work}
-% Placeholder — describe existing research relevant to the problem.
-% Example citation: \cite{author_keyword_year}
+\section{Object detection with YOLO}
+Since early 2016 the most commonly used model familiy for object detection is \gls{yolo}. 
+Compared to earlier approaches such as \gls{R-CNN}s\cite{object-detection} and its variants, which use a two-stage pipeline of region proposal followed by classification, 
+\gls{yolo} treats object detection as a single-stage regression problem over the entire image. 
+The image is divided into an $S \times S$ grid. If the centre of an object falls within a grid cell, that cell is responsible for detecting it. 
+Each grid cell then produces $B$ bounding boxes containing the following predictions:
+\begin{listitemize}
+\item {$(x,y)$: centre coordinates normalized relative to the grid cell}
+\item {$(h,w)$: size of the cell relative to the grid cell}
+\item {$P(obj)\cdot \mathbf{IoU}^{truth}_{pred}$}: confidence prediction prediction
+\item {$C$: class probability conditioned on grid cell containing the object, independent from bounding box}
+\end{listitemize}
 
-\section{Background}
-% Placeholder — introduce foundational concepts and terminology.
+[image]
 
-% --- FIGURE TEMPLATE ---
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.8\textwidth]{your_image_filename}   % filename without extension, file goes in figs/
-%     \caption{Your caption text.}
-%     \label{fig:your_label}
-% \end{figure}
+At test time, the conditional class probabilites are multiplied with the individual box confidence predctions which results in class-specific confidence scores for each box
+[image - not yet in repo!!! https://www.baeldung.com/cs/yolo-algorithm (NMS)]
+This results in $S\times S\times B$ candidate detections which are then filtered using a confidence threshold and Non-Maximum Suppression \gls{nms} 
+to eliminate duplicate detections of the same object. 
 
-% --- EQUATION TEMPLATE ---
-% \begin{equation}
-%     \label{eq:your_label}
-%     y = f(x)
-% \end{equation}
+The network is a single \gls{cnn} - in \gls{yolo}v1 a 24-layer architecture inspired by \gls{googlenet}, that processes the full image in a single forward pass, which is the reason for its speed 
+advantage over two-stage detectors. The final layer outputs a tensor of shape $S\times S \times (b \cdot 5 + C)$ encoding all box predictions and class scores simultaneously. 
+Training optimizes a multi-part \gls{sum square error loss} that penalizes localisation error $(x, y, h, w)$ , confidence error for cells with and without objects, and classification error. 
 
-% --- ACRONYM USAGE TEMPLATE ---
-% First use (expands automatically): \gls{gan}
-% Subsequent uses (short form):      \gls{gan}
-% Plural:                            \glspl{gan}
+To avoid training a \gls{yolo} model from scratch which requires a significant amount of GPU time and millions of data points, a pretrained version was used: \gls{yolov8-iov7m} 
+which already contains the use-case ladder (class index 298/300 in the medium version).
+Compared to the single-path convolutional architecture of earlier \gls{yolo} versions, the \gls{yolo}v8 backbone \gls{cspdarknet53}\cite{cspdarknet} divides the feature map at each stage into two parts: one through the 
+residual block, one bypassing it, reducing duplicate gradient information while preserving the representation capacity 
+
+\section{Synthetic Image Generation: Diffusion Models}
+Diffusion models are a state-of-the-art image generation model family. In simple terms, they take an input image $x_0$
+and gradually add Gaussian noise through a series of timesteps $T$. A neural network is then trained to recover $x_0$
+by denoising during the reverse diffusion process, thereby learning the data distribution $q(x_0)$ and enabling the generation of new data samples. 
+The forward diffusion is formulated as a \gls{markov chain} of $T$ steps, where each step only depends on the previous $\mathbf{step}_{t-1}$. At each $\mathbf{step}_t$
+Gaussian noise is added with variance $\beta_t$ producing a new latent variable $x_t$ with distribution $q(x_t|x_{t-1})$. The variance schedule $\beta_1, ..., \beta_T$ is fixed and and increases linearly, 
+ensuring that the forward and reverse process have approximately the same functional form\cite{diffusion}. As $t \rightarrow \infty$ the latent $x_T$ is nearly an \gls{isotropic Gaussian distribution}. Since $x_T$ 
+is approximately $\mathcal{N}(0,I)$ regardless of the original data distribution, it can be sampled freely. Running the learned reverse from $x_T$ therefore recovers a sample from $q(x_0)$ without ever having to specify 
+$q(x_0)$ explicitly, resulting in a "new" datapoint. In practice the reverse distribution $q(x_{T-1} | x_T)$ cannot be computed directly as it requires summing over all possible trajectories $x_0:T$ that could have produced $x_T$
+through the forward chain. A \gls{u-net} $p_\theta(x_{T-q} | x_T)$ approximates the reverse at each timestep with the forward process serving as the posterior \cite{diffusion}
+Training optimizes a variational lower bound on the data \gls{log-likelihood} which decomposes into \gls{kl-divergence} between $p_\theta(x_{T-1} | x_T)$  and the forward posterior $q(x_{T-1} | x_T)$ 
+he network then predicts the noise added at each forward step - rather than the reverse mean or $x_0$ directly. This down-weights small t-terms, where the image is barely corrupted, and up-weights large t-terms, where the signal is mostly noise.
+At inference, noise is reinjected at each reverse step to sample from the full approximate posterior rather than its mean.
+
+\section{Guided Diffusion: text-based encoding}
+The reverse process as described in Section !!!!!!!!! approximates $q(x)$ meaning samples are drawn from the learend data distribution with no constraint on semantic content. To direct synthetic toward a specific object class or scene, 
+the reverse process must instead sample from $q(x|c)$ where $c$ encodes the desired content as a text prompt. \gls{glide}\cite{glide} chieves this by encoding $c$ via a Transformer into a sequence of tokens, which are injected into the \gls{u-net} 
+through additional cross-attention layers at multiple spatial resolutions alongside the existing timestep conditioning. The cross-attention operates at each \gls{u-net} resolution block, allowing $c$ to modulate both the spatial layout and the local texture 
+at every step $t$ of the reverse process. Rather than operating in pixel space directly, \gls{glide}'s reverse process runs in the latent 
+space of a pretrained autoencoder, compressing the image into a lower-dimensional representation before denoising and decoding back to pixel 
+space only at the final step. However, conditioning on  alone produces samples that are semantically weak relative to the promp\cite{glide}. 
+To mitigate this,\gls{glide} introduces classifier-free guidance where $c$ is dropped randomly but with fixed probability, 
+forcing the \gls{u-net} to jointly learn the conditional distribution $p(x|c)$ and the unconditional $p(x)$ with shared weights. 
+It further augments the generation with a \gls{clip}\cite{clip} reranking stage. A pool of candidates is generated under the guided 
+reverse process and ranked by \gls{cosine similarity} between each sample's \gls{clip} image  embedding and the prompt embedding, which provides 
+a semantic filter independant of the denoising trajector\cite{glide}.
+[diagram]
+
+\section{Paint-by-Example Object inpainting}
+With Paint by Example \cite{pbe} instead of generating an entire synthetic image, the diffusion process is limited to a binary mask in order to replace 
+or inpaint an object into a new background. A source image $x_s$, a binary mask $m$, and a reference image $x_r$ 
+of the desired object are taken as input. The region $m=0$ s preseved identically from $x_s$ while $m=1$ is filled 
+conditioned on $x_r$. The unmasked pixels $1 - m = \tilde{m} \odot x_s$ are encoded into the latent space and concatenated 
+channel-wise to $x_t$ at each reverse step, so the 
+\gls{u-net} has access to the preserved background when denoising the masked region. A \gls{clip} image encoder\cite{clip} replaces 
+the text encoder of standard latent diffusion, producing a conditioning embedding $c$ from $x$ injected into the \gls{u-net} via cross-attention.
+The \gls{clip} encoder produces 257 tokens from $x_r$: one class token encoding global semantics and 256 spatial path tokens encoding local texture 
+at $16\times16$ resolution\cite{pbe}. The 256 patch token preseve enough pixel-level correspondence between $x_r$ and the masked region that the \gls{u-net} 
+can satisfy the noise prediction loss by copying $x_r$ directly into the mask via cross-attention (DUPLICATE?). Since ground-truth composites cannot be 
+collected at scale, training is self-supervised
+\begin{equation}
+    \label{eq:self-supervised reference copied into mask}
+    x_r = m \odot x_s
+\end{equation} 
+ making the reconstruction target $x_s$ itself\cite{pbe}. The network then learns the trivial mapping 
+ \begin{equation}
+    \label{eq:trivial mapping}
+    \tilde{m} \odot x_s + x_r = x_s
+ \end{equation}
+ 
+producing copy-paste artefacts at test time where $x_r$ is no longer a patch of $x_s$. 
+To avoid this, the 256 patch tokens are dropped and $c$ restricted to the class token alone. This class token is then decoded through a small \gls{mlp} 
+before cross-attention injection, compressing the reference from $224 \times 224 \times 3$ 
+to a 1024-dimensional vector. The resulting representation keeps its semantic category and coarse geometry, 
+but not the spatial texture required for the trivial pixel-level copying. The network is therefore forced to understand the reference context rather than reproduce it. 
+
+

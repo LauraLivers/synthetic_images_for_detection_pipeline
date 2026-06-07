@@ -22,7 +22,7 @@ this automatically creates a `.gitignore` and `[dataset.dvc]` file. This exclude
 
 ### Label creation for training
 4. annotate all `ladder` images using `label-studio start` and navigate to `http://localhost:8080`
-
+download the boundingboxes in format `YOLO with images` 
 ---
 ## Step 2: Easy vs. Hard Samples
 ### Pretrained Model with class Ladder
@@ -188,3 +188,13 @@ use PCA-Orientation Information + Homography (bent bounding box) + Background Bo
 #### Color Transfer
 Histogram Matching in Latent Space??
 
+
+
+## RESULTS
+| Metric    | 5pct  | real data |
+|-----------|-------|-----------|
+| mAP@50    | 0.838 | 0.708     |
+| Recall    | 0.781 | 0.750     |
+| FN        | 11    | 17        |
+| FP        | 0     | 0         |
+| TP        | 14    | 8         |
