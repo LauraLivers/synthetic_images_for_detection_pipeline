@@ -1,4 +1,0 @@
-[core]
-    remote = ladder_images
-['remote "ladder_images"']
-    url = ../Laura/robo_images/patrol_images
