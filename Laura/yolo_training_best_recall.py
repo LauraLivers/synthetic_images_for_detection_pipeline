@@ -123,6 +123,7 @@ train_results = final_model.train(
 final_model = YOLO(train_results.save_dir / 'weights/best.pt')
 test_metrics = final_model.val(data=DATASET_YAML, split='test')
 
+run = wandb.init(project=WANDB_PROJECT, name=f"final_{name}_eval", resume="allow")
 run.log({
     'test_mAP50': test_metrics.box.map50,
     'test_mAP50_95': test_metrics.box.map,

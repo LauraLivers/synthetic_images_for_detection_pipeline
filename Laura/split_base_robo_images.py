@@ -53,6 +53,16 @@ def setup_real_baseline(base_dir, annotations_dir, out_dir, seed):
 
     process_class('ladder', base_path, ann_dir, out_path)
     process_class('no_ladder', base_path, ann_dir, out_path)
+    try:
+        with open(out_path / 'dataset.yaml', 'w') as f:
+            f.write(f'path: {out_path.name}\n')
+            f.write('train: train/images\n')
+            f.write('val: val/images\n')
+            f.write('test: test/images\n')
+            f.write('nc: 1\n')
+            f.write('names:\n  0: ladder\n')
+    except Exception as e:
+        print(f"yaml write failed: {e}")
 
 
 def augment_images(source_imgs, target_img_dir, target_lbl_dir, count, seed, is_ladder, baseline_label_dir):
@@ -164,7 +174,7 @@ def inject_synthetic_to_train(baseline_dir, synth_images_dir, synth_annotations_
     augment_images(bg_src, train_img_dir, train_label_dir, z, seed, is_ladder=False, baseline_label_dir=baseline_label_dir)
 
     with open(new_dataset_dir / 'dataset.yaml', 'w') as f:
-        f.write('path: .\n')
+        f.write(f'path: dataset_mobi_synth_aug/{new_dataset_dir.name}\n')
         f.write('train: train/images\n')
         f.write('val: val/images\n')
         f.write('test: test/images\n')
